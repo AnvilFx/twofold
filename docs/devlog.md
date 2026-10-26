@@ -16,6 +16,9 @@ tracing rounds them off. Contours are simplified together so a thin gap between 
 outlines can't close up. Holes get bridged into their outline, then ear clipping and
 Hertel-Mehlhorn to merge triangles back into convex pieces of at most 8 vertices.
 
+Added a Cutouts scene: rings, gears, stars and hooks traced from images, falling on pegs
+and into a traced bowl. A ring catches on a peg through its hole, which was the point.
+
 ## 2026-10-26 23:07
 
 First commit. Spheres, boxes, cylinders, prisms and half-spaces, a soft step solver with
