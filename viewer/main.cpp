@@ -26,7 +26,7 @@ Vector3 rl(const Vec3& v) { return { v.x, v.y, v.z }; }
 Vec3 tf(const Vector3& v) { return { v.x, v.y, v.z }; }
 
 const char* geometryName(const Geometry& g) {
-    static const char* names[] = { "Sphere", "Box", "Cylinder", "Prism", "Half-space" };
+    static const char* names[] = { "Sphere", "Box", "Cylinder", "Prism", "Hull", "Half-space" };
     return names[g.index()];
 }
 
@@ -45,6 +45,8 @@ std::string describe(const Geometry& g) {
         std::snprintf(text, sizeof(text), "Cylinder  r %.3f  half height %.3f", c->radius, c->halfHeight);
     } else if (const Prism* p = std::get_if<Prism>(&g)) {
         std::snprintf(text, sizeof(text), "Prism  %d sides  z %.3f to %.3f", (int)p->polygon.size(), p->zMin, p->zMax);
+    } else if (const Hull* h = std::get_if<Hull>(&g)) {
+        std::snprintf(text, sizeof(text), "Hull  %d points  at most %d corners", (int)h->points.size(), h->maxVertices);
     } else {
         std::snprintf(text, sizeof(text), "Half-space");
     }
@@ -418,7 +420,7 @@ struct App {
                     "Right, Left       step forward, back\n"
                     "Home, End         first, last frame\n"
                     "R                 reset the scene\n"
-                    "1 to 8            change scene\n"
+                    "1 to 9            change scene\n"
                     "F                 focus the selection\n"
                     "C                 contacts\n"
                     "Delete            delete the selection\n"

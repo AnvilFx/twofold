@@ -10,6 +10,7 @@ the plane normal.
 ## Features
 
 - Sphere, box, cylinder, extruded convex polygon and half-space shapes
+- Convex hulls of point clouds, with a vertex limit
 - Bodies made of several shapes, with mass and inertia computed from density
 - Static, kinematic and dynamic bodies
 - Per-axis translation and rotation locks in any frame, including planar bodies
@@ -21,7 +22,7 @@ the plane normal.
 - Deterministic single-threaded stepping, and world copies that step identically
 - Per-step timings and counts, contact details and sleep islands for debugging tools
 
-Not yet implemented: joints, convex hulls, triangle meshes, shape casts and overlap
+Not yet implemented: joints, triangle meshes, shape casts and overlap
 queries, and contact callbacks. Cylinders collide as 24-sided prisms, except against a
 planar body in the same plane, where they are exact circles.
 
@@ -76,7 +77,7 @@ you configure. Pass `-DTWOFOLD_BUILD_VIEWER=OFF` to skip it.
 | Right, Left | Step forward or back |
 | Home, End | First or last recorded frame |
 | R | Reset the scene |
-| 1 to 8 | Change scene |
+| 1 to 9 | Change scene |
 | F | Focus the selected body |
 | C | Show contacts |
 | Delete | Delete the selected body |

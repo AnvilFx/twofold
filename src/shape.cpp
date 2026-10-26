@@ -1,6 +1,7 @@
 #include <algorithm>
 
 #include "internal.h"
+#include "twofold/hull.h"
 
 namespace twofold {
 
@@ -45,6 +46,15 @@ void buildShape(Shape& s) {
         pr->polygon = counterClockwise(pr->polygon);
         if (pr->zMax < pr->zMin) { std::swap(pr->zMin, pr->zMax); }
         s.poly = makePrism(pr->polygon, pr->zMin, pr->zMax);
+    } else if (const Hull* hu = std::get_if<Hull>(&s.geometry)) {
+        HullMesh mesh = computeHull(hu->points, hu->maxVertices);
+        if (mesh.vertices.empty()) {
+            s.kind = ShapeKind::Sphere;
+            s.extent = 0.0f;
+        } else {
+            s.kind = ShapeKind::Convex;
+            s.poly = makePolyhedron(std::move(mesh.vertices), mesh.faces);
+        }
     } else {
         s.kind = ShapeKind::HalfSpace;
         s.extent = 0.0f;
