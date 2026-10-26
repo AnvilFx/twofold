@@ -19,11 +19,13 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | --- | --- |
 | `include/twofold/world.h` | The public API: `World`, descriptors, geometry types, queries |
 | `include/twofold/math.h` | `Vec2`, `Vec3`, `Quat`, `Mat3`, `Transform` |
+| `include/twofold/hull.h` | `computeHull` |
 | `src/internal.h` | Internal types shared by the source files |
 | `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
 | `src/collide3d.cpp` | SAT for polyhedra, sphere and half-space pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
+| `src/hull.cpp` | Quickhull with a vertex limit |
 | `src/shape.cpp`, `src/polyhedron.cpp` | Shape building, mass properties, bounds |
 | `src/query.cpp` | Ray casts |
 
@@ -68,12 +70,19 @@ with locks. See [decision 1](decisions/0001-planar-bodies-are-locked-3d-bodies.m
 | `Sphere` | A point with a radius |
 | `Box`, `Prism` | A polyhedron |
 | `Cylinder` | A 24-sided prism in 3D, an exact circle on the planar path |
+| `Hull` | A polyhedron from `computeHull` |
 | `HalfSpace` | Everything below the local xy plane. Static bodies only |
 
 See [decision 5](decisions/0005-cylinders-are-prisms-in-3d.md) for why cylinders are prisms.
 
 Every polyhedron keeps vertices, face loops with planes, and an edge list with the two
 faces on each edge. The edge list is what the SAT edge queries walk.
+
+`computeHull` is quickhull. It stops adding points once the hull reaches `maxVertices`,
+always taking the point farthest outside the current hull, so a limited hull keeps the
+corners that matter most. Faces whose normals are within a cosine of 0.9998 merge into one
+polygon. A flat, collinear or single-point cloud is thickened into a thin slab first, so
+every hull has volume.
 
 ## The step
 

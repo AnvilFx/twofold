@@ -175,7 +175,34 @@ void drawHalfSpace(const twofold::Transform& xf, const Vec3& focus, bool filled)
     }
 }
 
-void drawGeometry(const twofold::Transform& xf, const Geometry& g, const Color* fill, Color edge, const Vec3& focus) {
+void drawHull(const twofold::Transform& xf, const HullMesh& hull, const Color* fill, Color edge) {
+    std::vector<Vec3> p;
+    for (const Vec3& v : hull.vertices) { p.push_back(xf.apply(v)); }
+    int corners = 0;
+    for (const std::vector<int>& f : hull.faces) { corners += (int)f.size(); }
+    if (fill) {
+        rlCheckRenderBatchLimit(corners * 3);
+        rlBegin(RL_TRIANGLES);
+        for (const std::vector<int>& f : hull.faces) {
+            const Color c = shade(*fill, normalize(cross(p[f[1]] - p[f[0]], p[f[2]] - p[f[0]])));
+            for (size_t i = 1; i + 1 < f.size(); ++i) { triangle(p[f[0]], p[f[i]], p[f[i + 1]], c); }
+        }
+        rlEnd();
+    }
+    rlCheckRenderBatchLimit(corners * 2);
+    rlBegin(RL_LINES);
+    color(edge);
+    for (const std::vector<int>& f : hull.faces) {
+        for (size_t i = 0; i < f.size(); ++i) {
+            vertex(p[f[i]]);
+            vertex(p[f[(i + 1) % f.size()]]);
+        }
+    }
+    rlEnd();
+}
+
+void drawGeometry(const twofold::Transform& xf, const Visual& v, const Color* fill, Color edge, const Vec3& focus) {
+    const Geometry& g = v.geometry;
     if (const Box* b = std::get_if<Box>(&g)) {
         const Vec3 h = b->halfExtents;
         drawPrism(xf, { { -h.x, -h.y }, { h.x, -h.y }, { h.x, h.y }, { -h.x, h.y } }, -h.z, h.z, fill, edge, true);
@@ -185,6 +212,8 @@ void drawGeometry(const twofold::Transform& xf, const Geometry& g, const Color* 
         drawPrism(xf, circle(cy->radius, 32), -cy->halfHeight, cy->halfHeight, fill, edge, false);
     } else if (const Prism* pr = std::get_if<Prism>(&g)) {
         drawPrism(xf, pr->polygon, pr->zMin, pr->zMax, fill, edge, true);
+    } else if (std::holds_alternative<Hull>(g)) {
+        drawHull(xf, v.hull, fill, edge);
     } else {
         drawHalfSpace(xf, focus, fill != nullptr);
     }
@@ -283,9 +312,9 @@ void drawScene(const Scene& s, const DrawOptions& o, const Vec3& focus, BodyId s
         const twofold::Transform xf = w.transform(v.body) * v.local;
         const Color c = bodyColor(w, v, o.colorMode);
         if (o.wireframe) {
-            drawGeometry(xf, v.geometry, nullptr, c, focus);
+            drawGeometry(xf, v, nullptr, c, focus);
         } else {
-            drawGeometry(xf, v.geometry, &c, scale(c, 0.45f), focus);
+            drawGeometry(xf, v, &c, scale(c, 0.45f), focus);
         }
     }
 
@@ -322,7 +351,7 @@ void drawScene(const Scene& s, const DrawOptions& o, const Vec3& focus, BodyId s
         rlDisableDepthTest();
         for (const Visual& v : s.visuals) {
             if (v.body != selected || std::holds_alternative<HalfSpace>(v.geometry)) { continue; }
-            drawGeometry(w.transform(v.body) * v.local, v.geometry, nullptr, kSelected, focus);
+            drawGeometry(w.transform(v.body) * v.local, v, nullptr, kSelected, focus);
         }
         rlDrawRenderBatchActive();
         rlEnableDepthTest();

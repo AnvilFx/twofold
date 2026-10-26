@@ -11,6 +11,7 @@ struct Visual {
     twofold::Geometry geometry;
     twofold::Transform local;
     Color color;
+    twofold::HullMesh hull;
 };
 
 struct Scene {

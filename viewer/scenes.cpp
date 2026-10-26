@@ -106,6 +106,55 @@ void rain(Scene& s) {
     }
 }
 
+std::vector<Vec3> rock(Rng& rng, const Vec3& size, int count) {
+    std::vector<Vec3> p;
+    for (int i = 0; i < count; ++i) {
+        const Vec3 d = normalize(Vec3{ rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1) });
+        const float r = rng.range(0.8f, 1.0f);
+        p.push_back({ d.x * size.x * r, d.y * size.y * r, d.z * size.z * r });
+    }
+    return p;
+}
+
+std::vector<Vec3> gem(int sides, float radius, float crown, float pavilion) {
+    std::vector<Vec3> p{ { 0, -pavilion, 0 } };
+    for (int i = 0; i < sides; ++i) {
+        const float a = 2.0f * kPi * (float)i / (float)sides;
+        p.push_back({ radius * std::cos(a), 0, radius * std::sin(a) });
+        p.push_back({ 0.6f * radius * std::cos(a + kPi / (float)sides), crown, 0.6f * radius * std::sin(a + kPi / (float)sides) });
+    }
+    return p;
+}
+
+std::vector<Vec3> cone(int sides, float radius, float height) {
+    std::vector<Vec3> p{ { 0, height, 0 } };
+    for (int i = 0; i < sides; ++i) {
+        const float a = 2.0f * kPi * (float)i / (float)sides;
+        p.push_back({ radius * std::cos(a), 0, radius * std::sin(a) });
+    }
+    return p;
+}
+
+void hulls(Scene& s) {
+    ground(s);
+    Rng rng;
+    s.add(body({ 0, 0, 0 }, MotionType::Static), shape(Hull{ rock(rng, { 3, 1.6f, 2.5f }, 200) }), kStatic);
+    for (int i = 0; i < 96; ++i) {
+        const int cell = i % 16, level = i / 16;
+        const Vec3 p{ -3.0f + 2.0f * (float)(cell % 4) + (float)(level % 2) + rng.range(-0.1f, 0.1f), 4.0f + 1.6f * (float)level,
+                      -3.0f + 2.0f * (float)(cell / 4) + rng.range(-0.1f, 0.1f) };
+        const Quat q = Quat::axisAngle({ rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1) }, rng.range(0, kPi));
+        Hull h;
+        switch (i % 3) {
+            case 0: h.points = rock(rng, { rng.range(0.3f, 0.6f), rng.range(0.2f, 0.4f), rng.range(0.3f, 0.5f) }, 120); break;
+            case 1: h.points = gem(8, rng.range(0.3f, 0.45f), 0.15f, 0.35f); break;
+            default: h.points = cone(16, rng.range(0.25f, 0.35f), rng.range(0.5f, 0.8f)); break;
+        }
+        h.maxVertices = 32;
+        s.add(body(p, MotionType::Dynamic, q), shape(h), solid(i));
+    }
+}
+
 void dominoes(Scene& s) {
     ground(s);
     const float radius = 8.0f;
@@ -228,7 +277,9 @@ BodyId Scene::add(const BodyDesc& desc, const ShapeDesc& shapeDesc, Color color)
 
 void Scene::attach(BodyId b, const ShapeDesc& shapeDesc, Color color) {
     const ShapeId shape = world.addShape(b, shapeDesc);
-    visuals.push_back({ b, shape, shapeDesc.geometry, { shapeDesc.position, shapeDesc.rotation }, color });
+    Visual v{ b, shape, shapeDesc.geometry, { shapeDesc.position, shapeDesc.rotation }, color, {} };
+    if (const Hull* h = std::get_if<Hull>(&shapeDesc.geometry)) { v.hull = computeHull(h->points, h->maxVertices); }
+    visuals.push_back(std::move(v));
 }
 
 const std::vector<SceneInfo>& sceneList() {
@@ -242,6 +293,8 @@ const std::vector<SceneInfo>& sceneList() {
         { "Sweeper", "A kinematic arm sweeping loose bodies.", sweeper, { 0, 1, 0 }, 22, 0.5f, 0.6f },
         { "Slopes", "Friction 0.02, 0.25 and 0.9. Restitution 0, 0.5 and 0.9.", slopes, { 3, 2, 0 }, 20, 0.9f, 0.3f },
         { "Sleeping", "Bodies created asleep until something touches them.", dormant, { 0, 3, 0 }, 18, 0.6f, 0.3f },
+        { "Hulls", "Rocks, gems and cones as convex hulls of point clouds, falling onto a static rock.", hulls, { 0, 2, 0 }, 20,
+          0.7f, 0.4f },
     };
     return scenes;
 }

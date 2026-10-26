@@ -60,10 +60,16 @@ struct Prism {
     float zMax = 0.5f;
 };
 
+// The convex hull of a point cloud, as computeHull builds it.
+struct Hull {
+    std::vector<Vec3> points;
+    int maxVertices = 64;
+};
+
 // Everything below the local xy plane. Static bodies only.
 struct HalfSpace {};
 
-using Geometry = std::variant<Sphere, Box, Cylinder, Prism, HalfSpace>;
+using Geometry = std::variant<Sphere, Box, Cylinder, Prism, Hull, HalfSpace>;
 
 struct ShapeDesc {
     Geometry geometry = Box{};

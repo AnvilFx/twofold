@@ -3,6 +3,13 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 00:50
+
+Convex hulls from point clouds. Quickhull, stopping at a vertex limit, always taking the
+farthest point out first, so a hull with a low limit still keeps its corners.
+Coplanar triangles merge back into polygon faces so SAT doesn't test the same plane twice.
+Flat or collinear clouds get thickened into a thin slab so they still have volume.
+
 ## 2026-10-26 23:07
 
 First commit. Spheres, boxes, cylinders, prisms and half-spaces, a soft step solver with
