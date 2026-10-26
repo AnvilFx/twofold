@@ -18,7 +18,7 @@ all its state by value, so copying it gives a snapshot that steps exactly like t
 ## Consequences
 
 - The same calls in the same order give bit-identical results with the same build.
-- Rewinding is a copy, and replay can be checked frame by frame.
+- Rewinding is a copy, and replay can be checked frame by frame. The viewer does this.
 - No multithreading. If it comes later, it has to keep the same results, for example by
   solving islands in parallel and merging them in a fixed order.
 - Different compilers, flags or platforms can still differ, since floating point results

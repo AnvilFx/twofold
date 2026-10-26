@@ -7,3 +7,4 @@ Notes as I go, newest first. The longer reasoning behind some of this is in
 
 First commit. Spheres, boxes, cylinders, prisms and half-spaces, a soft step solver with
 substeps, sleeping islands, locks, and the planar path for layers that share a plane.
+Then the debug viewer, with a recorded timeline that rewinds and replays exactly.

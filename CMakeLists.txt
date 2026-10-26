@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 project(twofold VERSION 0.1.0 LANGUAGES C CXX)
 
 option(TWOFOLD_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
+option(TWOFOLD_BUILD_VIEWER "Build the interactive viewer, which downloads raylib" ${PROJECT_IS_TOP_LEVEL})
 
 add_library(twofold
     src/collide2d.cpp
@@ -32,4 +33,8 @@ if(TWOFOLD_BUILD_TESTS)
     add_executable(twofold_tests tests/main.cpp tests/test_world.cpp)
     target_link_libraries(twofold_tests PRIVATE twofold)
     add_test(NAME twofold_tests COMMAND twofold_tests)
+endif()
+
+if(TWOFOLD_BUILD_VIEWER)
+    add_subdirectory(viewer)
 endif()

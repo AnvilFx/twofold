@@ -35,7 +35,7 @@ vector plus a generation. Destroying a body bumps its generation and puts the sl
 free list, so a stale id fails `isValid` instead of reaching whatever reused the slot.
 
 Copying a `World` copies the `Impl` by value. Nothing inside points into anything else, so
-a copy is a full snapshot and steps identically.
+a copy is a full snapshot and steps identically. The viewer's timeline is built on this.
 
 ## Bodies
 
@@ -189,7 +189,8 @@ threshold and the sleep threshold scale the same way. A scene in centimeters set
 The step is single threaded and never iterates in an order that depends on memory
 addresses or hashing. Candidate pairs and contacts are sorted by shape index, and bodies
 are visited by index. The tests run the same scene twice and compare every pose bit for
-bit, and check that a copied world steps like the original.
+bit, and check that a copied world steps like the original. The viewer's verify command
+replays a whole session from a fresh scene and compares every frame.
 
 See [decision 3](decisions/0003-single-threaded-and-deterministic.md).
 
