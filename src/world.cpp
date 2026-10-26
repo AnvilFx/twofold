@@ -171,19 +171,33 @@ struct World::Impl {
         wakeBodies(touched);
     }
 
+    // A static or kinematic start wakes the dynamic bodies touching it, without spreading past them.
     void wakeBodies(const std::vector<uint32_t>& start) {
         std::vector<uint32_t> stack;
+        bool anchors = false;
         for (uint32_t i : start) {
-            Body& b = bodies[i];
-            if (b.alive && b.type == MotionType::Dynamic && !b.awake) { stack.push_back(i); }
+            const Body& b = bodies[i];
+            if (!b.alive) { continue; }
+            if (b.type != MotionType::Dynamic) {
+                anchors = true;
+            } else if (!b.awake) {
+                stack.push_back(i);
+            }
         }
-        if (stack.empty()) { return; }
+        if (stack.empty() && !anchors) { return; }
 
         std::vector<std::vector<uint32_t>> adjacency(bodies.size());
         for (const Contact& c : contacts) {
             if (c.count == 0) { continue; }
             adjacency[c.bodyA].push_back(c.bodyB);
             adjacency[c.bodyB].push_back(c.bodyA);
+        }
+        for (uint32_t i : start) {
+            if (!bodies[i].alive || bodies[i].type == MotionType::Dynamic) { continue; }
+            for (uint32_t j : adjacency[i]) {
+                const Body& o = bodies[j];
+                if (o.type == MotionType::Dynamic && !o.awake) { stack.push_back(j); }
+            }
         }
         while (!stack.empty()) {
             const uint32_t i = stack.back();

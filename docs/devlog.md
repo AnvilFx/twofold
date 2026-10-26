@@ -17,3 +17,5 @@ The viewer showed problems right away:
 - Boxes sliding over the edge of a slope sank in. Nearly parallel edge pairs give an
   unstable axis, so those are left to the face queries now.
 - Rain, Sweeper and Flat layers spawned bodies inside each other. Fixed the scenes.
+- Moving a floor with `setTransform` left the bodies on it floating. Waking only started
+  from dynamic bodies. A static or kinematic body now wakes what it touches.
