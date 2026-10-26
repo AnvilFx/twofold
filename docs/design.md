@@ -179,6 +179,8 @@ for `timeToSleep`. A moving kinematic body keeps whatever touches it awake.
 Waking floods through touching contacts from the bodies that need it:
 
 - A dynamic body wakes its whole island.
+- A static or kinematic body wakes the dynamic bodies touching it, without spreading past
+  them.
 - A sleeping body touched by a moving body wakes during the narrowphase.
 
 Removing a shape or body wakes the bodies that touched it.

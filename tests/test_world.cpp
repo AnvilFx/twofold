@@ -682,3 +682,25 @@ TEST(boxes_slide_on_slope_without_sinking) {
     }
     CHECK(deepest < 0.005f);
 }
+
+TEST(sleeping_body_falls_when_its_floor_moves) {
+    for (int mode = 0; mode < 3; ++mode) {
+        World w;
+        const MotionType type = mode == 0 ? MotionType::Static : MotionType::Kinematic;
+        const BodyId floor = addBox(w, { 0, -0.5f, 0 }, { 3, 0.5f, 3 }, type);
+        const BodyId b = addBox(w, { 0, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+        run(w, 3.0f);
+        CHECK(!w.isAwake(b));
+        if (mode < 2) {
+            w.setTransform(floor, { 0, -2.5f, 0 }, {});
+        } else {
+            for (int i = 1; i <= 30; ++i) {
+                w.setKinematicTarget(floor, { 0, -0.5f - 2.0f * (float)i / 30.0f, 0 }, {}, kDt);
+                w.step(kDt);
+            }
+            w.setLinearVelocity(floor, {});
+        }
+        run(w, 1.5f);
+        CHECK_NEAR(w.position(b).y, -1.5f, 0.02f);
+    }
+}
