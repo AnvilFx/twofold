@@ -20,6 +20,8 @@ is tested by AnvilFx before it ships.
 
 - Sphere, box, cylinder, extruded convex polygon and half-space shapes
 - Convex hulls of point clouds, with a vertex limit
+- Outlines traced from alpha images and cut into convex pieces, for exact 2D shapes with
+  holes and concave edges
 - Bodies made of several shapes, with mass and inertia computed from density
 - Static, kinematic and dynamic bodies
 - Per-axis translation and rotation locks in any frame, including planar bodies

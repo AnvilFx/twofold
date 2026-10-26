@@ -9,3 +9,4 @@ replaces the old one instead of editing it.
 3. [Single threaded and deterministic](0003-single-threaded-and-deterministic.md)
 4. [Sort and sweep, rebuilt every step](0004-sort-and-sweep-rebuilt-every-step.md)
 5. [Cylinders are prisms in 3D](0005-cylinders-are-prisms-in-3d.md)
+6. [Traced outlines become convex pieces](0006-traced-outlines-become-convex-pieces.md)
