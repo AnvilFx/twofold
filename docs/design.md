@@ -109,7 +109,8 @@ See [decision 4](decisions/0004-sort-and-sweep-rebuilt-every-step.md).
 
 - **Polyhedron pairs** use SAT: face normals of A, face normals of B, then edge pairs. Edge
   pairs are pruned with the Gauss map test, so only pairs that form a face of the Minkowski
-  difference are tried.
+  difference are tried. Edge pairs closer to parallel than a small sine are skipped. Their
+  axis is unstable and a face axis gives the same answer.
 - **Face contacts** clip the incident face against the side planes of the reference face.
 - **Edge contacts** use the closest points of the two edges as a single contact.
 - **Spheres** against polyhedra, spheres and half-spaces have their own direct tests. So do
@@ -120,9 +121,14 @@ margin apart, are kept so the solver can stop an approach before it turns into o
 
 ### Manifold reduction
 
-A manifold keeps at most four points. The deepest candidate goes in first, then the one
-farthest from it, then the one giving the largest triangle with those two, then the one
-farthest outside that triangle.
+A manifold keeps at most four points. Each candidate gets a predicted separation: its
+current separation plus the relative normal velocity at that point times `dt`. The point
+predicted deepest goes in first. Among the points within a small band of it, the next goes
+to the one farthest away, then the one giving the largest triangle, then the one farthest
+outside that triangle. Free slots take the deepest of the rest.
+
+Ranking on predicted separation rather than current separation matters for tumbling
+bodies. The vertex about to land is kept even though it is not touching yet.
 
 ### The planar path
 

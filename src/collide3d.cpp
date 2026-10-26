@@ -6,6 +6,9 @@ namespace twofold {
 
 namespace {
 
+// Edge pairs closer to parallel than this sine give an unstable axis and are left to the face queries.
+constexpr float kParallelEdges = 0.05f;
+
 struct WorldPoly {
     const Polyhedron* src = nullptr;
     std::vector<Vec3> v;
@@ -75,7 +78,7 @@ EdgeQuery queryEdges(const WorldPoly& a, const WorldPoly& b) {
             const Vec3 db = b.v[eb[j].v1] - pb;
             Vec3 axis = cross(da, db);
             const float len = length(axis);
-            if (len < 1e-5f * length(da) * length(db)) { continue; }
+            if (len < kParallelEdges * length(da) * length(db)) { continue; }
             axis = axis / len;
             if (dot(axis, pa - a.centroid) < 0.0f) { axis = -axis; }
             const float s = dot(axis, pb - pa);
@@ -105,7 +108,8 @@ void clipPolygon(std::vector<Vec3>& poly, const Vec3& n, const Vec3& origin) {
     poly.swap(out);
 }
 
-void faceContact(const WorldPoly& ref, int refFace, const WorldPoly& inc, bool flip, float margin, Manifold& m) {
+void faceContact(const WorldPoly& ref, int refFace, const WorldPoly& inc, bool flip, float margin, float band,
+                 const Motion& motion, Manifold& m) {
     const Vec3 refN = ref.n[refFace];
     const float refD = ref.d[refFace];
 
@@ -130,9 +134,9 @@ void faceContact(const WorldPoly& ref, int refFace, const WorldPoly& inc, bool f
     std::vector<ManifoldPoint> pts;
     for (const Vec3& p : poly) {
         const float s = dot(refN, p) - refD;
-        if (s <= margin) { pts.push_back({ p - refN * (0.5f * s), s }); }
+        if (s <= margin) { pts.push_back({ p - refN * (0.5f * s), s, motion.predict(p, refN, s) }); }
     }
-    reduceManifold(pts, flip ? -refN : refN, m);
+    reduceManifold(pts, flip ? -refN : refN, band, m);
 }
 
 void closestOnSegments(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec3& q2, Vec3& c1, Vec3& c2) {
@@ -169,7 +173,7 @@ void closestOnSegments(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec
 }
 
 void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const Transform& xb,
-                   float margin, const Tolerances& tol, Manifold& m) {
+                   float margin, const Tolerances& tol, const Motion& motion, Manifold& m) {
     const WorldPoly a = toWorld(sa.poly, xa);
     const WorldPoly b = toWorld(sb.poly, xb);
 
@@ -190,9 +194,9 @@ void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const 
         m.points[0] = { (c1 + c2) * 0.5f, eq.separation };
         m.count = 1;
     } else if (fb.separation > 0.98f * fa.separation + absTol) {
-        faceContact(b, fb.index, a, true, margin, m);
+        faceContact(b, fb.index, a, true, margin, tol.linearSlop, motion.swapped(), m);
     } else {
-        faceContact(a, fa.index, b, false, margin, m);
+        faceContact(a, fa.index, b, false, margin, tol.linearSlop, motion, m);
     }
 }
 
@@ -265,7 +269,8 @@ void collideSpheres(const Vec3& ca, float ra, const Vec3& cb, float rb, float ma
 }
 
 // Normal points out of the half-space.
-void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& xo, float margin, Manifold& m) {
+void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& xo, float margin, float band,
+                      const Motion& motion, Manifold& m) {
     const Vec3 n = xh.q.rotate({ 0, 0, 1 });
     const float offset = dot(n, xh.p);
     if (other.kind == ShapeKind::Sphere) {
@@ -281,14 +286,16 @@ void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& 
     for (const Vec3& v : other.poly.vertices) {
         const Vec3 w = xo.apply(v);
         const float s = dot(n, w) - offset;
-        if (s <= margin) { pts.push_back({ w - n * (0.5f * s), s }); }
+        if (s <= margin) { pts.push_back({ w - n * (0.5f * s), s, motion.predict(w, n, s) }); }
     }
-    reduceManifold(pts, n, m);
+    reduceManifold(pts, n, band, m);
 }
 
 }
 
-void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, Manifold& m) {
+// Ranks points by predicted separation. Spread is chosen among points within band of the deepest,
+// then free slots take the deepest of the rest.
+void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float band, Manifold& m) {
     m.normal = normal;
     m.count = 0;
     if (pts.size() <= 4) {
@@ -298,57 +305,79 @@ void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, Manifol
 
     size_t i0 = 0;
     for (size_t i = 1; i < pts.size(); ++i) {
-        if (pts[i].separation < pts[i0].separation) { i0 = i; }
+        if (pts[i].predicted < pts[i0].predicted) { i0 = i; }
     }
     const Vec3 p0 = pts[i0].position;
+    const float limit = pts[i0].predicted + band;
+    std::vector<bool> used(pts.size(), false);
+    used[i0] = true;
+    m.points[m.count++] = pts[i0];
 
-    size_t i1 = i0;
-    float best = -1.0f;
+    size_t i1 = pts.size();
+    float best = 0.0f;
     for (size_t i = 0; i < pts.size(); ++i) {
+        if (pts[i].predicted > limit) { continue; }
         const float d = lengthSquared(pts[i].position - p0);
         if (d > best) { best = d; i1 = i; }
     }
-    const Vec3 p1 = pts[i1].position;
 
-    size_t i2 = i0;
+    size_t i2 = pts.size();
     float area = 0.0f;
-    for (size_t i = 0; i < pts.size(); ++i) {
-        const float a = dot(cross(p1 - p0, pts[i].position - p0), normal);
-        if (std::fabs(a) > std::fabs(area)) { area = a; i2 = i; }
-    }
-    const Vec3 p2 = pts[i2].position;
-    const float sign = area < 0.0f ? -1.0f : 1.0f;
-
-    m.points[m.count++] = pts[i0];
-    if (i1 != i0) { m.points[m.count++] = pts[i1]; }
-    if (i2 != i0 && i2 != i1) { m.points[m.count++] = pts[i2]; }
-    if (m.count < 3) { return; }
-
-    size_t i3 = pts.size();
-    float outside = 0.0f;
-    const Vec3 tri[3] = { p0, p1, p2 };
-    for (size_t i = 0; i < pts.size(); ++i) {
-        if (i == i0 || i == i1 || i == i2) { continue; }
-        for (int e = 0; e < 3; ++e) {
-            const Vec3& a = tri[e];
-            const Vec3& b = tri[(e + 1) % 3];
-            const float s = -sign * dot(cross(b - a, pts[i].position - a), normal);
-            if (s > outside) { outside = s; i3 = i; }
+    if (i1 < pts.size()) {
+        used[i1] = true;
+        m.points[m.count++] = pts[i1];
+        const Vec3 p1 = pts[i1].position;
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (used[i] || pts[i].predicted > limit) { continue; }
+            const float a = dot(cross(p1 - p0, pts[i].position - p0), normal);
+            if (std::fabs(a) > std::fabs(area)) { area = a; i2 = i; }
         }
     }
-    if (i3 < pts.size()) { m.points[m.count++] = pts[i3]; }
+
+    if (i2 < pts.size()) {
+        used[i2] = true;
+        m.points[m.count++] = pts[i2];
+        const float sign = area < 0.0f ? -1.0f : 1.0f;
+        const Vec3 tri[3] = { p0, m.points[1].position, pts[i2].position };
+        size_t i3 = pts.size();
+        float outside = 0.0f;
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (used[i] || pts[i].predicted > limit) { continue; }
+            for (int e = 0; e < 3; ++e) {
+                const Vec3& a = tri[e];
+                const Vec3& b = tri[(e + 1) % 3];
+                const float s = -sign * dot(cross(b - a, pts[i].position - a), normal);
+                if (s > outside) { outside = s; i3 = i; }
+            }
+        }
+        if (i3 < pts.size()) {
+            used[i3] = true;
+            m.points[m.count++] = pts[i3];
+        }
+    }
+
+    while (m.count < 4) {
+        size_t next = pts.size();
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (used[i]) { continue; }
+            if (next == pts.size() || pts[i].predicted < pts[next].predicted) { next = i; }
+        }
+        if (next == pts.size()) { break; }
+        used[next] = true;
+        m.points[m.count++] = pts[next];
+    }
 }
 
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
-             float margin, const Tolerances& tol, Manifold& m) {
+             float margin, const Tolerances& tol, const Motion& motion, Manifold& m) {
     m.count = 0;
     const ShapeKind ka = a.kind, kb = b.kind;
     if (ka == ShapeKind::HalfSpace && kb == ShapeKind::HalfSpace) { return; }
 
     if (ka == ShapeKind::HalfSpace) {
-        collideHalfSpace(xa, b, xb, margin, m);
+        collideHalfSpace(xa, b, xb, margin, tol.linearSlop, motion, m);
     } else if (kb == ShapeKind::HalfSpace) {
-        collideHalfSpace(xb, a, xa, margin, m);
+        collideHalfSpace(xb, a, xa, margin, tol.linearSlop, motion.swapped(), m);
         m.normal = -m.normal;
     } else if (ka == ShapeKind::Sphere && kb == ShapeKind::Sphere) {
         collideSpheres(xa.p, a.radius, xb.p, b.radius, margin, m);
@@ -358,7 +387,7 @@ void collide(const Shape& a, const Transform& xa, const Shape& b, const Transfor
     } else if (kb == ShapeKind::Sphere) {
         collideSpherePoly(a, xa, xb.p, b.radius, margin, m);
     } else {
-        collideConvex(a, xa, b, xb, margin, tol, m);
+        collideConvex(a, xa, b, xb, margin, tol, motion, m);
     }
 }
 

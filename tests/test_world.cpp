@@ -54,6 +54,14 @@ void run(World& w, float seconds) {
 
 float upAxisY(const Quat& q) { return std::fabs(q.rotate({ 0, 1, 0 }).y); }
 
+float deepestContact(const World& w) {
+    float d = 0.0f;
+    for (const ContactInfo& c : w.contacts()) {
+        for (int i = 0; i < c.pointCount; ++i) { d = std::fmax(d, -c.separations[i]); }
+    }
+    return d;
+}
+
 }
 
 TEST(mass_of_box_prism_and_cylinder) {
@@ -601,4 +609,76 @@ TEST(speculative_contacts_are_reported_on_request) {
     const std::vector<ContactInfo> cs = w.contacts(true);
     CHECK(cs.size() == 1);
     CHECK(cs[0].separations[0] > 0.0f);
+}
+
+TEST(cylinder_on_its_side_comes_to_rest) {
+    World w;
+    addGround(w, 0.5f);
+    BodyDesc bd;
+    bd.position = { 0, 0.6f, 0 };
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Cylinder{ 0.3f, 0.3f };
+    w.addShape(b, sd);
+    run(w, 1.0f);
+    float deepest = 0.0f;
+    for (int f = 0; f < 120; ++f) {
+        w.step(kDt);
+        deepest = std::fmax(deepest, deepestContact(w));
+    }
+    CHECK(!w.isAwake(b));
+    CHECK(deepest < 0.005f);
+}
+
+TEST(tumbling_cylinders_do_not_sink_into_ground) {
+    float deepest = 0.0f;
+    for (int i = 0; i < 24; ++i) {
+        World w;
+        addGround(w);
+        const float t = (float)i;
+        BodyDesc bd;
+        bd.position = { 0, 2.0f + 0.25f * t, 0 };
+        bd.rotation = Quat::axisAngle({ std::sin(1.3f * t), std::cos(2.1f * t), 0.5f }, 0.4f * t);
+        bd.angularVelocity = Vec3{ std::sin(0.7f * t), std::cos(1.9f * t), std::sin(2.9f * t) } * 8.0f;
+        const BodyId b = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = Cylinder{ 0.3f, 0.3f };
+        w.addShape(b, sd);
+        for (int f = 0; f < 240; ++f) {
+            w.step(kDt);
+            deepest = std::fmax(deepest, deepestContact(w));
+        }
+    }
+    CHECK(deepest < 0.02f);
+}
+
+TEST(boxes_slide_on_slope_without_sinking) {
+    float deepest = 0.0f;
+    for (float friction : { 0.02f, 0.25f, 0.9f }) {
+        World w;
+        addGround(w);
+        BodyDesc bd;
+        bd.type = MotionType::Static;
+        bd.position = { 0, 2, 0 };
+        bd.rotation = Quat::axisAngle({ 0, 0, 1 }, 0.35f);
+        const BodyId slope = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = Box{ { 5, 0.25f, 1.2f } };
+        sd.friction = friction;
+        w.addShape(slope, sd);
+
+        BodyDesc boxDesc;
+        boxDesc.rotation = bd.rotation;
+        boxDesc.position = bd.position + bd.rotation.rotate({ 3.5f, 0.65f, 0 });
+        const BodyId b = w.createBody(boxDesc);
+        ShapeDesc bs;
+        bs.geometry = Box{ { 0.4f, 0.4f, 0.4f } };
+        bs.friction = friction;
+        w.addShape(b, bs);
+        for (int f = 0; f < 600; ++f) {
+            w.step(kDt);
+            deepest = std::fmax(deepest, deepestContact(w));
+        }
+    }
+    CHECK(deepest < 0.005f);
 }
