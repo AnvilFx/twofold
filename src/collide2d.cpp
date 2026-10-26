@@ -80,6 +80,39 @@ Vec2 edgeNormal(const std::vector<Vec2>& poly, size_t i) {
     return normalize(Vec2{ e.y, -e.x });
 }
 
+struct SegmentClosest {
+    Vec2 a, b;
+    float s = 0.0f, t = 0.0f;
+};
+
+SegmentClosest closestOnSegments(const Vec2& p1, const Vec2& q1, const Vec2& p2, const Vec2& q2) {
+    const Vec2 d1 = q1 - p1, d2 = q2 - p2, r = p1 - p2;
+    const float a = dot(d1, d1), e = dot(d2, d2), f = dot(d2, r);
+    SegmentClosest c;
+    if (a <= FLT_EPSILON && e > FLT_EPSILON) {
+        c.t = std::clamp(f / e, 0.0f, 1.0f);
+    } else if (a > FLT_EPSILON) {
+        const float k = dot(d1, r);
+        if (e <= FLT_EPSILON) {
+            c.s = std::clamp(-k / a, 0.0f, 1.0f);
+        } else {
+            const float b = dot(d1, d2), denom = a * e - b * b;
+            c.s = denom > 0.0f ? std::clamp((b * f - k * e) / denom, 0.0f, 1.0f) : 0.0f;
+            c.t = (b * c.s + f) / e;
+            if (c.t < 0.0f) {
+                c.t = 0.0f;
+                c.s = std::clamp(-k / a, 0.0f, 1.0f);
+            } else if (c.t > 1.0f) {
+                c.t = 1.0f;
+                c.s = std::clamp((b - k) / a, 0.0f, 1.0f);
+            }
+        }
+    }
+    c.a = p1 + d1 * c.s;
+    c.b = p2 + d2 * c.t;
+    return c;
+}
+
 float maxSeparation(const std::vector<Vec2>& a, const std::vector<Vec2>& b, int& edge) {
     float best = -FLT_MAX;
     edge = 0;
@@ -116,6 +149,21 @@ void collidePolygons(const std::vector<Vec2>& a, const std::vector<Vec2>& b, flo
     const Vec2 v21 = inc[i2];
     const Vec2 v22 = inc[(i2 + 1) % inc.size()];
 
+    // Separated polygons nearest at two vertices touch along the line between them.
+    if (std::fmax(sa, sb) > 0.1f * slop) {
+        const SegmentClosest c = closestOnSegments(v11, v12, v21, v22);
+        if ((c.s == 0.0f || c.s == 1.0f) && (c.t == 0.0f || c.t == 1.0f)) {
+            const float dist = length(c.b - c.a);
+            if (dist > margin || dist <= 0.0f) { return; }
+            const Vec2 n = (c.b - c.a) * (1.0f / dist);
+            out.normal = flip ? -n : n;
+            out.points[0] = (c.a + c.b) * 0.5f;
+            out.separations[0] = dist;
+            out.count = 1;
+            return;
+        }
+    }
+
     const Vec2 tangent = normalize(v12 - v11);
     const float lower1 = 0.0f;
     const float upper1 = dot(v12 - v11, tangent);
@@ -123,13 +171,28 @@ void collidePolygons(const std::vector<Vec2>& a, const std::vector<Vec2>& b, flo
     const float lower2 = dot(v22 - v11, tangent);
     const float span = upper2 - lower2;
 
+    out.normal = flip ? -normal : normal;
+    // An incident edge entirely past the reference edge cannot be clipped, so its deepest vertex stands in.
+    if (upper2 < lower1 || lower2 > upper1) {
+        size_t deepest = 0;
+        float s = FLT_MAX;
+        for (size_t i = 0; i < inc.size(); ++i) {
+            const float d = dot(inc[i] - v11, normal);
+            if (d < s) { s = d; deepest = i; }
+        }
+        if (s > margin) { return; }
+        out.points[0] = inc[deepest] - normal * (0.5f * s);
+        out.separations[0] = s;
+        out.count = 1;
+        return;
+    }
+
     Vec2 vLower = v22, vUpper = v21;
     if (span > FLT_EPSILON) {
         if (lower2 < lower1) { vLower = v22 + (v21 - v22) * ((lower1 - lower2) / span); }
         if (upper2 > upper1) { vUpper = v22 + (v21 - v22) * ((upper1 - lower2) / span); }
     }
 
-    out.normal = flip ? -normal : normal;
     for (const Vec2& p : { vLower, vUpper }) {
         const float s = dot(p - v11, normal);
         if (s > margin) { continue; }

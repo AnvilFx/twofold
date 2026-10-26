@@ -154,6 +154,11 @@ each other. Otherwise polygons collide with reference and incident edges as in B
 the contacts are placed at the middle of the shared depth range. The normal lies in the
 plane, so a contact can never push two layers apart in depth.
 
+Two cases in the polygon test need care. Separated polygons whose nearest features are two
+vertices get one contact along the line between them, not a clipped edge. An incident edge
+that lies entirely past the end of the reference edge cannot be clipped, so its deepest
+vertex is used instead.
+
 ### Contact matching and warm starting
 
 Contacts are stored sorted by a key made of the two shape indices. A new point stores its
