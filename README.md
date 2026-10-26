@@ -44,7 +44,7 @@ cmake --build build
 ctest --test-dir build
 ```
 
-Tests build only when Twofold is the top-level project.
+Tests and the viewer build only when Twofold is the top-level project.
 
 To use Twofold from another CMake project:
 
@@ -52,6 +52,47 @@ To use Twofold from another CMake project:
 add_subdirectory(twofold)
 target_link_libraries(your_target PRIVATE twofold::twofold)
 ```
+
+## Viewer
+
+`twofold_viewer` is an interactive debugger for the demo scenes. It uses
+[raylib](https://www.raylib.com), [Dear ImGui](https://github.com/ocornut/imgui) and
+[rlImGui](https://github.com/raylib-extras/rlImGui), which CMake downloads the first time
+you configure. Pass `-DTWOFOLD_BUILD_VIEWER=OFF` to skip it.
+
+- **Timeline.** Every frame of the last minute is recorded. Step forward and back, or drag
+  the slider to any recorded frame. Edits, shots and drags are logged, so rewinding and
+  playing again reproduces the run exactly. If stepping through recorded frames ever gives
+  a different state, the viewer reports the first frame that differs. Verify determinism
+  replays the whole run from a fresh scene and compares every frame.
+- **Inspector.** Select a body to see and edit its type, pose, velocities, mass, locks,
+  damping and materials, its contacts with separations and forces, and plots of its
+  height and speed.
+- **Bodies.** A sortable table of every body, for finding the fastest, the highest or the
+  ones that never fall asleep.
+- **Step.** Time spent in each phase of the step, pair and contact counts, and plots of step
+  time, kinetic energy, deepest penetration and awake bodies.
+- **Draw.** Color by material, motion state, sleep island or speed. Overlays show contact
+  points, speculative contacts, normal and friction forces, bounds, centers of mass, body
+  axes, velocities, lock planes and body numbers, for all bodies or only the selected one.
+- **World.** Every world setting can be changed while the scene runs.
+
+| Input | Action |
+| --- | --- |
+| Left click | Select a body. Drag to pull it |
+| B | Shoot a ball at the cursor |
+| Space | Play or pause |
+| Right, Left | Step forward or back |
+| Home, End | First or last recorded frame |
+| R | Reset the scene |
+| 1 to 8 | Change scene |
+| F | Focus the selected body |
+| C | Show contacts |
+| Delete | Delete the selected body |
+| Escape | Clear the selection |
+| Right drag | Orbit |
+| Middle drag | Pan |
+| Wheel | Zoom |
 
 ## Example
 
