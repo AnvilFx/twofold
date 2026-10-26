@@ -611,6 +611,31 @@ TEST(speculative_contacts_are_reported_on_request) {
     CHECK(cs[0].separations[0] > 0.0f);
 }
 
+TEST(planar_near_miss_reports_the_gap) {
+    World w;
+    w.setGravity({});
+    BodyDesc ad;
+    ad.type = MotionType::Static;
+    ad.locks = LockPlanar;
+    const BodyId a = w.createBody(ad);
+    ShapeDesc sa;
+    sa.geometry = Prism{ { { 0.296f, 0.338f }, { 0.315f, 0.376f }, { 0.152f, 0.466f } }, -0.05f, 0.05f };
+    w.addShape(a, sa);
+    BodyDesc bd;
+    bd.locks = LockPlanar;
+    bd.linearVelocity = { 3.4f, -2.0f, 0 };
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sb;
+    sb.geometry = Prism{ { { 0.125f, 0.570f }, { 0.122f, 0.587f }, { 0.062f, 0.533f }, { 0.096f, 0.528f } }, -0.05f, 0.05f };
+    w.addShape(b, sb);
+    w.step(kDt);
+    const std::vector<ContactInfo> cs = w.contacts(true);
+    CHECK(cs.size() == 1);
+    for (const ContactInfo& c : cs) {
+        for (int i = 0; i < c.pointCount; ++i) { CHECK(c.separations[i] > 0.08f); }
+    }
+}
+
 TEST(cylinder_on_its_side_comes_to_rest) {
     World w;
     addGround(w, 0.5f);

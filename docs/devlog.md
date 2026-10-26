@@ -19,6 +19,13 @@ Hertel-Mehlhorn to merge triangles back into convex pieces of at most 8 vertices
 Added a Cutouts scene: rings, gears, stars and hooks traced from images, falling on pegs
 and into a traced bowl. A ring catches on a peg through its hole, which was the point.
 
+Cutouts turned up a bad case in the 2D polygon test. Two pieces passing corner to corner,
+8 cm apart, got contacts saying they were touching. The incident edge lay entirely past
+the end of the reference edge, and the clip extrapolated it into points on neither shape.
+Separated polygons nearest at two corners now get one point on the line between the
+corners. An incident edge past the reference edge uses its deepest vertex instead of
+being clipped.
+
 ## 2026-10-26 23:07
 
 First commit. Spheres, boxes, cylinders, prisms and half-spaces, a soft step solver with
