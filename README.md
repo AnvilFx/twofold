@@ -88,7 +88,7 @@ you configure. Pass `-DTWOFOLD_BUILD_VIEWER=OFF` to skip it.
 | Right, Left | Step forward or back |
 | Home, End | First or last recorded frame |
 | R | Reset the scene |
-| 1 to 9 | Change scene |
+| 1 to 9, 0 | Change scene |
 | F | Focus the selected body |
 | C | Show contacts |
 | Delete | Delete the selected body |

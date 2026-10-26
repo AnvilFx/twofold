@@ -257,8 +257,8 @@ struct App {
     void input(const Camera3D& cam) {
         const ImGuiIO& io = ImGui::GetIO();
         if (!io.WantCaptureKeyboard) {
-            for (int k = 0; k < (int)sceneList().size() && k < 9; ++k) {
-                if (IsKeyPressed(KEY_ONE + k)) { load(k, true); }
+            for (int k = 0; k < (int)sceneList().size() && k < 10; ++k) {
+                if (IsKeyPressed(k < 9 ? KEY_ONE + k : KEY_ZERO)) { load(k, true); }
             }
             if (IsKeyPressed(KEY_R)) { reset(); }
             if (IsKeyPressed(KEY_SPACE)) { playing = !playing; }
@@ -420,7 +420,7 @@ struct App {
                     "Right, Left       step forward, back\n"
                     "Home, End         first, last frame\n"
                     "R                 reset the scene\n"
-                    "1 to 9            change scene\n"
+                    "1 to 9, 0         change scene\n"
                     "F                 focus the selection\n"
                     "C                 contacts\n"
                     "Delete            delete the selection\n"

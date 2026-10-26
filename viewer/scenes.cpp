@@ -155,6 +155,75 @@ void hulls(Scene& s) {
     }
 }
 
+// Rasterizes a signed distance in pixels, centered with y up, then cuts the traced outline into prisms.
+template <typename F>
+std::vector<Prism> cutout(int width, int height, float scale, float depth, F distance) {
+    std::vector<uint8_t> alpha((size_t)width * height);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const float d = distance(Vec2{ (float)x + 0.5f - 0.5f * (float)width, 0.5f * (float)height - (float)y - 0.5f });
+            alpha[(size_t)y * width + x] = (uint8_t)std::lround(std::fmin(std::fmax(0.5f - d, 0.0f), 1.0f) * 255.0f);
+        }
+    }
+    std::vector<Prism> prisms;
+    for (const std::vector<Vec2>& piece : alphaPieces({ alpha.data(), width, height, width, 1 })) {
+        Prism pr{ {}, -depth, depth };
+        for (const Vec2& q : piece) { pr.polygon.push_back({ (q.x - 0.5f * (float)width) * scale, (0.5f * (float)height - q.y) * scale }); }
+        prisms.push_back(std::move(pr));
+    }
+    return prisms;
+}
+
+BodyId addCutout(Scene& s, const BodyDesc& bd, const std::vector<Prism>& prisms, Color color) {
+    const BodyId b = s.add(bd, shape(prisms[0], 0.5f), color);
+    for (size_t i = 1; i < prisms.size(); ++i) { s.attach(b, shape(prisms[i], 0.5f), color); }
+    return b;
+}
+
+void cutouts(Scene& s) {
+    ground(s);
+    auto ring = [](Vec2 p) { return std::fmax(length(p) - 40.0f, 24.0f - length(p)); };
+    auto gear = [](Vec2 p) {
+        const float r = length(p), teeth = std::cos(8.0f * std::atan2(p.y, p.x)) > 0.0f ? 44.0f : 36.0f;
+        return std::fmax(r - teeth, 12.0f - r);
+    };
+    auto star = [](Vec2 p) {
+        const float a = std::atan2(p.y, p.x);
+        return length(p) - (18.0f + 26.0f * std::pow(std::fabs(std::cos(2.5f * a + 0.5f * kPi)), 4.0f));
+    };
+    auto crescent = [](Vec2 p) { return std::fmax(length(p) - 42.0f, 32.0f - length(p - Vec2{ 16, 6 })); };
+    auto hook = [](Vec2 p) {
+        const float r = length(p);
+        return std::fabs(std::atan2(p.y, p.x) + 0.3f) < 0.75f ? 1.0f : std::fmax(r - 40.0f, 26.0f - r);
+    };
+    auto tee = [](Vec2 p) {
+        const float bar = std::fmax(std::fabs(p.x) - 42.0f, std::fabs(p.y - 30.0f) - 10.0f);
+        const float stem = std::fmax(std::fabs(p.x) - 10.0f, std::fabs(p.y + 6.0f) - 36.0f);
+        return std::fmin(bar, stem);
+    };
+    const float scale = 0.0125f, depth = 0.05f;
+    const std::vector<std::vector<Prism>> shapes{ cutout(96, 96, scale, depth, ring),     cutout(96, 96, scale, depth, gear),
+                                                  cutout(96, 96, scale, depth, star),     cutout(96, 96, scale, depth, crescent),
+                                                  cutout(96, 96, scale, depth, hook),     cutout(96, 96, scale, depth, tee) };
+
+    const std::vector<Prism> bowl = cutout(400, 140, 0.025f, 0.6f, [](Vec2 p) {
+        const float outer = std::fmax(std::fabs(p.x) - 190.0f, std::fabs(p.y) - 60.0f);
+        const float hollow = std::fmax(std::fabs(p.x) - 96.0f - 0.6f * (p.y + 30.0f), -30.0f - p.y);
+        return std::fmax(outer, -hollow);
+    });
+    addCutout(s, body({ 0, 1.5f, 0 }, MotionType::Static), bowl, kStatic);
+    for (int i = 0; i < 4; ++i) {
+        s.add(body({ -3.3f + 2.2f * (float)i, 6.0f, 0 }, MotionType::Static), shape(Box{ { 0.08f, 0.08f, 0.6f } }), kStatic);
+    }
+
+    Rng rng;
+    for (int i = 0; i < 36; ++i) {
+        const int cell = i % 6, level = i / 6;
+        const Vec3 p{ -4.0f + 1.6f * (float)cell + 0.8f * (float)(level % 2) + rng.range(-0.1f, 0.1f), 8.0f + 1.6f * (float)level, 0 };
+        addCutout(s, planar(p, Quat::axisAngle({ 0, 0, 1 }, rng.range(0, 2.0f * kPi))), shapes[(size_t)(i % 6)], flat(i));
+    }
+}
+
 void dominoes(Scene& s) {
     ground(s);
     const float radius = 8.0f;
@@ -295,6 +364,8 @@ const std::vector<SceneInfo>& sceneList() {
         { "Sleeping", "Bodies created asleep until something touches them.", dormant, { 0, 3, 0 }, 18, 0.6f, 0.3f },
         { "Hulls", "Rocks, gems and cones as convex hulls of point clouds, falling onto a static rock.", hulls, { 0, 2, 0 }, 20,
           0.7f, 0.4f },
+        { "Cutouts", "Traced 2D layers with holes and concave outlines, catching on pegs and piling into a traced bowl.",
+          cutouts, { 0, 4.5f, 0 }, 17, 0.25f, 0.15f },
     };
     return scenes;
 }
