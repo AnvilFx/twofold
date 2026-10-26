@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdint>
+#include <vector>
 
 #include "scene.h"
 
@@ -90,7 +91,9 @@ void rain(Scene& s) {
     s.add(body({ 3, 1, 1 }, MotionType::Static, kUp), shape(Cylinder{ 1.2f, 1.0f }), kStatic);
     Rng rng;
     for (int i = 0; i < 180; ++i) {
-        const Vec3 p{ rng.range(-4, 4), 5.0f + 0.25f * (float)i, rng.range(-3, 3) };
+        const int cell = i % 12, level = i / 12;
+        const Vec3 p{ -3.0f + 2.0f * (float)(cell % 4) + (float)(level % 2) + rng.range(-0.1f, 0.1f), 5.0f + 1.8f * (float)level,
+                      -2.0f + 2.0f * (float)(cell / 4) + rng.range(-0.1f, 0.1f) };
         const Quat q = Quat::axisAngle({ rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1) }, rng.range(0, kPi));
         Geometry g;
         switch (i % 4) {
@@ -132,7 +135,8 @@ void flatLayers(Scene& s) {
     Rng rng;
     for (int i = 0; i < 60; ++i) {
         const float z = (i % 3 == 0) ? 1.2f : 0.0f;
-        const Vec3 p{ rng.range(-4, 6), 5.0f + 0.35f * (float)i, z };
+        const int cell = i % 4, level = i / 4;
+        const Vec3 p{ -4.0f + 2.5f * (float)cell + 1.25f * (float)(level % 2) + rng.range(-0.3f, 0.3f), 5.0f + 0.9f * (float)level, z };
         const Quat q = Quat::axisAngle({ 0, 0, 1 }, rng.range(0, kPi));
         Geometry g;
         switch (i % 3) {
@@ -168,9 +172,17 @@ void sweeper(Scene& s) {
     s.update = sweeperUpdate;
 
     Rng rng;
+    std::vector<Vec3> placed;
     for (int i = 0; i < 90; ++i) {
-        const float a = rng.range(0, 2.0f * kPi), r = rng.range(1.5f, 7.0f);
-        const Vec3 pos{ r * std::cos(a), 0.3f + 0.6f * (float)(i % 2), r * std::sin(a) };
+        Vec3 pos;
+        bool clear = false;
+        while (!clear) {
+            const float a = rng.range(0, 2.0f * kPi), r = rng.range(1.5f, 7.0f);
+            pos = { r * std::cos(a), 0.3f + 0.6f * (float)(i % 2), r * std::sin(a) };
+            clear = pos.x < 0.0f || std::fabs(pos.z) > 0.6f;
+            for (const Vec3& q : placed) { clear = clear && lengthSquared(q - pos) >= 0.81f; }
+        }
+        placed.push_back(pos);
         Geometry g = (i % 3 == 0) ? Geometry{ Sphere{ 0.3f } } : Geometry{ Box{ { 0.3f, 0.3f, 0.3f } } };
         s.add(body(pos), shape(g, 0.4f), solid(i));
     }

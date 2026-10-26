@@ -278,7 +278,8 @@ struct World::Impl {
             Manifold m;
             Vec3 n;
             if (!usePlanar(ba, bb, n) || !collidePlanar(sa, xa, sb, xb, n, margin, tol, m)) {
-                collide(sa, xa, sb, xb, margin, tol, m);
+                const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt };
+                collide(sa, xa, sb, xb, margin, tol, mo, m);
             }
             if (m.count == 0) { continue; }
 

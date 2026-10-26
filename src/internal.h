@@ -113,6 +113,7 @@ struct Body {
 struct ManifoldPoint {
     Vec3 position;
     float separation = 0.0f;
+    float predicted = 0.0f;
 };
 
 // Normal points from shape A to shape B.
@@ -127,15 +128,35 @@ struct Tolerances {
     float speculative = 0.02f;
 };
 
+// Velocities of the two bodies over the coming step.
+struct Motion {
+    Vec3 linearA;
+    Vec3 angularA;
+    Vec3 centerA;
+    Vec3 linearB;
+    Vec3 angularB;
+    Vec3 centerB;
+    float dt = 0.0f;
+
+    // Separation at p after the step, with n pointing from A to B.
+    float predict(const Vec3& p, const Vec3& n, float separation) const {
+        const Vec3 va = linearA + cross(angularA, p - centerA);
+        const Vec3 vb = linearB + cross(angularB, p - centerB);
+        return separation + dt * dot(n, vb - va);
+    }
+
+    Motion swapped() const { return { linearB, angularB, centerB, linearA, angularA, centerA, dt }; }
+};
+
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
-             float margin, const Tolerances& tol, Manifold& m);
+             float margin, const Tolerances& tol, const Motion& motion, Manifold& m);
 
 // Collides two shapes that both extrude along n, as 2D profiles in the plane normal to n.
 // Returns false when either shape does not extrude along n.
 bool collidePlanar(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
                    const Vec3& n, float margin, const Tolerances& tol, Manifold& m);
 
-void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, Manifold& m);
+void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m);
 
 struct ContactPoint {
     Vec3 localA;
