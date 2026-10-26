@@ -20,12 +20,14 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `include/twofold/world.h` | The public API: `World`, descriptors, geometry types, queries |
 | `include/twofold/math.h` | `Vec2`, `Vec3`, `Quat`, `Mat3`, `Transform` |
 | `include/twofold/hull.h` | `computeHull` |
+| `include/twofold/outline.h` | Alpha tracing, contour simplification, convex decomposition |
 | `src/internal.h` | Internal types shared by the source files |
 | `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
 | `src/collide3d.cpp` | SAT for polyhedra, sphere and half-space pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
 | `src/hull.cpp` | Quickhull with a vertex limit |
+| `src/outline.cpp` | Marching squares, simplification, ear clipping, Hertel-Mehlhorn |
 | `src/shape.cpp`, `src/polyhedron.cpp` | Shape building, mass properties, bounds |
 | `src/query.cpp` | Ray casts |
 
@@ -210,6 +212,22 @@ bit, and check that a copied world steps like the original. The viewer's verify 
 replays a whole session from a fresh scene and compares every frame.
 
 See [decision 3](decisions/0003-single-threaded-and-deterministic.md).
+
+## Outlines
+
+`alphaPieces` turns an alpha image into convex polygons ready to use as prisms:
+
+1. **Trace.** Marching squares on the alpha channel, with crossings interpolated between
+   pixel centers. Holes wind the opposite way to the outlines around them.
+2. **Simplify.** Douglas-Peucker on each closed contour. Corners then move to where the
+   fitted straight runs beside them meet, which restores corners that tracing rounded off.
+   Contours are simplified together, and any edges that touch or cross are refined until
+   none do.
+3. **Decompose.** Holes are bridged into their outline with a zero-width cut. The result
+   is ear clipped, then Hertel-Mehlhorn removes diagonals, longest first, wherever both ends
+   stay convex and the piece stays within `maxVertices`.
+
+See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
 
 ## Known limits
 
