@@ -269,6 +269,32 @@ void drawContacts(const Scene& s, const DrawOptions& o, BodyId selected) {
     }
 }
 
+void drawJoints(const Scene& s, const DrawOptions& o, BodyId selected) {
+    const World& w = s.world;
+    const Color kinds[] = { { 255, 220, 90, 255 }, { 255, 120, 90, 255 }, { 90, 220, 255, 255 }, { 150, 255, 120, 255 },
+                            { 230, 140, 255, 255 } };
+    const Color arm{ 200, 200, 210, 255 };
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
+    for (const JointInfo& j : w.joints()) {
+        if (o.selectedOnly && j.bodyA != selected && j.bodyB != selected) { continue; }
+        const Color c = kinds[(int)j.type];
+        if (w.isValid(j.bodyA)) { drawLine(w.centerOfMass(j.bodyA), j.anchorA, arm); }
+        drawLine(w.centerOfMass(j.bodyB), j.anchorB, arm);
+        DrawSphereEx(rl(j.anchorA), 0.05f, 4, 6, c);
+        if (j.type == JointType::Distance || j.type == JointType::Slider) {
+            drawLine(j.anchorA, j.anchorB, c);
+            DrawSphereEx(rl(j.anchorB), 0.05f, 4, 6, c);
+        } else {
+            drawLine(j.anchorA, j.anchorB, RED);
+        }
+        if (j.type == JointType::Hinge) { drawLine(j.anchorA - j.axis * 0.4f, j.anchorA + j.axis * 0.4f, c); }
+        if (j.type == JointType::Slider) { drawLine(j.anchorA - j.axis * 0.8f, j.anchorA + j.axis * 0.8f, c); }
+    }
+    rlDrawRenderBatchActive();
+    rlEnableDepthTest();
+}
+
 void drawPlanes(const Scene& s, const Vec3& focus) {
     const World& w = s.world;
     struct Plane {
@@ -345,6 +371,7 @@ void drawScene(const Scene& s, const DrawOptions& o, const Vec3& focus, BodyId s
     }
 
     if (o.contacts) { drawContacts(s, o, selected); }
+    if (o.joints) { drawJoints(s, o, selected); }
 
     if (w.isValid(selected)) {
         rlDrawRenderBatchActive();

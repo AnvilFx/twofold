@@ -25,6 +25,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping, continuous collision |
 | `src/tree.h`, `src/tree.cpp` | The dynamic AABB tree behind the broadphase and queries |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
+| `src/joint.cpp` | Joint warm starting, the joint solve and the settle pass |
 | `src/collide3d.cpp` | SAT for polyhedra, sphere and half-space pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
 | `src/distance.cpp` | GJK distance, sweeps, time of impact |
@@ -104,11 +105,12 @@ every hull has volume.
 4. **Substeps.** `substeps` times (4 by default):
    - halfway through, fast pairs are collided again (see below)
    - integrate velocities
-   - warm start
-   - solve contacts with bias, then again for impact contacts
+   - warm start joints, then contacts
+   - solve joints with bias, then contacts, then again for impact contacts
    - integrate positions
-   - relax: solve contacts again without bias, then again for impact contacts
+   - relax: solve joints and contacts again without bias, then again for impact contacts
 5. **Restitution.** One pass over points that were approaching faster than the threshold.
+   Then the settle pass moves jointed bodies to close what joint error is left.
 6. **Clean up.** Forces and torques clear, and kinematic bodies snap to their targets.
 7. **Continuous collision.** Bodies that moved well past what their speculative contacts
    covered are swept and moved back.
@@ -253,6 +255,42 @@ same way as after the narrowphase, and the restitution data of the nearest old p
 
 See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md).
 
+## Joints
+
+A joint stores its anchors in each body's local frame, and for a hinge or slider its axis
+in both. An unset body A is the world, a static body at the origin. Values such as the
+hinge angle and slider translation are body B relative to A, zero in the joined pose.
+
+| Joint | Rows |
+| --- | --- |
+| Point | A 3D point row |
+| Fixed | A 3D turn row, then the point row |
+| Hinge | Motor, limits, a 2D turn row across the axis, then the point row |
+| Slider | Motor, limits, a 3D turn row, then a 2D point row across the axis |
+| Distance | One row along the line between the anchors, rigid, sprung or limited |
+
+The point and turn rows are soft, at `jointHertz` and `jointDampingRatio`, capped at half
+the substep rate. Limits only push. Like speculative contacts, they start acting before
+the limit is reached, so a fast swing stops at it instead of past it. A motor is clamped
+to its maximum torque or force times the substep. Every row warm starts from the impulse it
+ended the last step with.
+
+A hinge's motor and limits act about the anchor, not the body's center. Their impulse is
+a turn about the axis plus the point impulse that turn needs to keep the anchors
+together. A slider's motor and limits likewise carry the turn that keeps the bodies from
+rotating. Without this a door bounces off its limit. See
+[decision 18](decisions/0018-limits-and-motors-move-the-whole-joint.md).
+
+The relax pass solves every row rigid. After restitution, two settle iterations move the
+bodies of each active joint directly, turn first, then any exceeded limit, then the point
+or slide, without changing velocities. See
+[decision 17](decisions/0017-soft-joints-with-a-settle-pass.md).
+
+A joint is active when one of its bodies is an awake dynamic body. Joints tie their
+dynamic bodies into one island, so they sleep and wake together, and a moving kinematic
+end keeps the other body awake. Bodies joined directly don't collide unless
+`collideConnected` is set. Changing a joint's limits, motor or spring wakes it.
+
 ## Continuous collision
 
 Speculative contacts cover motion at the velocities a step starts with. A body that speeds
@@ -331,7 +369,9 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
 
 ## Known limits
 
-- No joints, triangle meshes, shape casts, overlap queries or contact callbacks yet.
+- No triangle meshes, shape casts, overlap queries or contact callbacks yet.
+- A light chain holding a much heavier body stretches. Twelve links holding a ball about
+  200 times heavier than each link rest 0.17 m longer in total.
 - A planar body on a half-space goes through the 3D path. It behaves correctly but does
   not get the exact circles of the planar path.
 - Contacts are springs, so a stack sags under its own weight. A three box tower rests

@@ -30,13 +30,14 @@ is tested by AnvilFx before it ships.
 - Continuous collision for bodies knocked or pushed through thin shapes within a single
   step, against static, kinematic and dynamic bodies
 - Sleeping islands, and bodies created asleep until touched
+- Point, fixed, hinge, slider and distance joints, with limits, motors and springs
 - Collision filtering by category and mask
 - Ray casts against every shape type
 - Deterministic single-threaded stepping, and world copies that step identically
 - Per-step timings and counts, contact details and sleep islands for debugging tools
 
-Not yet implemented: joints, triangle meshes, shape casts and overlap
-queries, and contact callbacks. Cylinders collide as 24-sided prisms, except against a
+Not yet implemented: triangle meshes, shape casts and overlap queries, and contact
+callbacks. Cylinders collide as 24-sided prisms, except against a
 planar body in the same plane, where they are exact circles.
 
 ## Building
@@ -79,7 +80,8 @@ you configure. Pass `-DTWOFOLD_BUILD_VIEWER=OFF` to skip it.
   time, kinetic energy, deepest penetration and awake bodies.
 - **Draw.** Color by material, motion state, sleep island or speed. Overlays show contact
   points, speculative contacts, normal and friction forces, bounds, centers of mass, body
-  axes, velocities, lock planes and body numbers, for all bodies or only the selected one.
+  axes, velocities, lock planes, joints and body numbers, for all bodies or only the
+  selected one.
 - **World.** Every world setting can be changed while the scene runs.
 
 | Input | Action |
@@ -136,6 +138,25 @@ Set `BodyDesc::locks` to `LockPlanar` to keep a body in the xy plane of its
 frame. Boxes, prisms and cylinders that extrude along the plane normal use the 2D
 path against each other. Any other pair, such as a planar box against a free sphere,
 uses the 3D path.
+
+## Joints
+
+Anchors and axes are given in world space, at the poses the bodies have when the joint is
+made. Leave `bodyA` unset to join body B to the world.
+
+```cpp
+JointDesc door;
+door.bodyB = panel;
+HingeJoint hinge{ { 0, 1, 0 }, { 0, 1, 0 } };
+hinge.limited = true;
+hinge.lowerAngle = -1.6f;
+hinge.upperAngle = 1.6f;
+door.kind = hinge;
+JointId id = world.createJoint(door);
+```
+
+Joined bodies don't collide with each other unless `collideConnected` is set. Destroying
+a body destroys its joints.
 
 ## Units
 

@@ -25,6 +25,14 @@ struct ShapeId {
     bool operator!=(const ShapeId& b) const { return !(*this == b); }
 };
 
+struct JointId {
+    uint32_t index = UINT32_MAX;
+    uint32_t generation = 0;
+
+    bool operator==(const JointId& b) const { return index == b.index && generation == b.generation; }
+    bool operator!=(const JointId& b) const { return !(*this == b); }
+};
+
 enum class MotionType : uint8_t { Static, Kinematic, Dynamic };
 
 // Degrees of freedom a dynamic body may not use, measured along the axes of BodyDesc::lockFrame.
@@ -108,6 +116,69 @@ struct MassProperties {
     Mat3 inertia = Mat3::zero();
 };
 
+// Anchors and axes are in world space, at the poses the bodies have when the joint is made.
+
+// Holds the anchor of both bodies together and leaves them free to turn.
+struct PointJoint {
+    Vec3 anchor;
+};
+
+// Holds the bodies in the pose they were joined in.
+struct FixedJoint {
+    Vec3 anchor;
+};
+
+// Turns about the axis through the anchor. The angle is in radians, counterclockwise about the axis and zero
+// in the joined pose. The motor drives the turn toward motorSpeed with up to maxMotorTorque, so a speed of
+// zero acts as friction.
+struct HingeJoint {
+    Vec3 anchor;
+    Vec3 axis{ 0, 0, 1 };
+    bool limited = false;
+    float lowerAngle = 0.0f;
+    float upperAngle = 0.0f;
+    float motorSpeed = 0.0f;
+    float maxMotorTorque = 0.0f;
+};
+
+// Slides along the axis through the anchor without turning. The translation is how far body B has moved
+// along the axis since it was joined.
+struct SliderJoint {
+    Vec3 anchor;
+    Vec3 axis{ 1, 0, 0 };
+    bool limited = false;
+    float lowerTranslation = 0.0f;
+    float upperTranslation = 0.0f;
+    float motorSpeed = 0.0f;
+    float maxMotorForce = 0.0f;
+};
+
+// Holds the anchors at length apart, or as a spring when hertz is above zero. A negative length takes the
+// distance they start at. With limits, the distance stays between them and is otherwise free or sprung.
+struct DistanceJoint {
+    Vec3 anchorA;
+    Vec3 anchorB;
+    float length = -1.0f;
+    float hertz = 0.0f;
+    float dampingRatio = 0.0f;
+    bool limited = false;
+    float minDistance = 0.0f;
+    float maxDistance = 0.0f;
+};
+
+using JointKind = std::variant<PointJoint, FixedJoint, HingeJoint, SliderJoint, DistanceJoint>;
+
+enum class JointType : uint8_t { Point, Fixed, Hinge, Slider, Distance };
+
+struct JointDesc {
+    // Left unset, body B is joined to the world.
+    BodyId bodyA;
+    BodyId bodyB;
+    JointKind kind = PointJoint{};
+    bool collideConnected = false;
+    void* userData = nullptr;
+};
+
 struct WorldSettings {
     Vec3 gravity{ 0.0f, -9.81f, 0.0f };
     // World units per meter. Every tolerance and speed below is in meters and scales by this.
@@ -123,6 +194,8 @@ struct WorldSettings {
     // collision keep their contact points. Only the separations are measured again.
     float contactReuseDistance = 0.0005f;
     float contactReuseAngle = 0.035f;
+    float jointHertz = 60.0f;
+    float jointDampingRatio = 2.0f;
     // Moves a body back to its first impact when a sudden change in speed would carry it into another shape.
     bool continuous = true;
 };
@@ -147,6 +220,18 @@ struct ContactInfo {
     float separations[4] = {};
     float normalImpulses[4] = {};
     Vec3 tangentImpulses[4];
+};
+
+struct JointInfo {
+    JointId joint;
+    JointType type = JointType::Point;
+    BodyId bodyA;
+    BodyId bodyB;
+    Vec3 anchorA;
+    Vec3 anchorB;
+    Vec3 axis;
+    // The hinge angle, slider translation or distance. Zero for point and fixed joints.
+    float value = 0.0f;
 };
 
 struct Aabb {
@@ -242,6 +327,16 @@ public:
     void addImpulse(BodyId body, const Vec3& impulse, bool wake = true);
     void addImpulseAtPoint(BodyId body, const Vec3& impulse, const Vec3& point, bool wake = true);
 
+    // Returns an invalid id when body B is invalid, or body A is set but invalid or the same as B.
+    JointId createJoint(const JointDesc& desc);
+    void destroyJoint(JointId joint);
+    bool isValid(JointId joint) const;
+    // Angles for a hinge, translations for a slider, distances for a distance joint.
+    void setJointLimits(JointId joint, bool limited, float lower, float upper);
+    void setJointMotor(JointId joint, float speed, float maxForce);
+    void setJointSpring(JointId joint, float hertz, float dampingRatio);
+    std::vector<JointInfo> joints() const;
+
     MassProperties massProperties(BodyId body) const;
     // Replaces the mass computed from the shapes until resetMassProperties is called.
     void setMassProperties(BodyId body, const MassProperties& mass);
@@ -267,6 +362,7 @@ public:
 
     void* userData(BodyId body) const;
     void* userData(ShapeId shape) const;
+    void* userData(JointId joint) const;
 
     // Contacts after the last step. Speculative contacts have points that are not yet touching.
     std::vector<ContactInfo> contacts(bool includeSpeculative = false) const;

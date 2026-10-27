@@ -335,6 +335,141 @@ void dormant(Scene& s) {
     }
 }
 
+JointId join(Scene& s, BodyId a, BodyId b, const JointKind& kind) {
+    JointDesc jd;
+    jd.bodyA = a;
+    jd.bodyB = b;
+    jd.kind = kind;
+    const JointId j = s.world.createJoint(jd);
+    s.joints.push_back(j);
+    return j;
+}
+
+void jointsUpdate(Scene& s, float) {
+    const float speed = std::fmod(s.time, 8.0f) < 4.0f ? 1.2f : -1.2f;
+    s.world.setJointMotor(s.joints[0], speed, 100.0f);
+}
+
+void joints(Scene& s) {
+    ground(s);
+
+    BodyDesc lift = body({ 4, 0.5f, 2 });
+    const BodyId platform = s.add(lift, shape(Box{ { 0.6f, 0.08f, 0.6f } }), solid(3));
+    SliderJoint lj{ { 4, 0.5f, 2 }, { 0, 1, 0 } };
+    lj.limited = true;
+    lj.upperTranslation = 3.0f;
+    join(s, BodyId{}, platform, lj);
+    s.add(body({ 4, 0.85f, 2 }), shape(Box{ { 0.25f, 0.25f, 0.25f } }), solid(0));
+    s.update = jointsUpdate;
+
+    BodyId prev;
+    for (int i = 0; i < 10; ++i) {
+        const float x = -13.0f + 0.4f * (float)i;
+        const BodyId link = s.add(body({ x + 0.2f, 8, -5 }), shape(Box{ { 0.2f, 0.06f, 0.06f } }), solid(i));
+        join(s, prev, link, PointJoint{ { x, 8, -5 } });
+        prev = link;
+    }
+    const BodyId bob = s.add(body({ -8.7f, 8, -5 }), shape(Sphere{ 0.3f }), solid(2));
+    join(s, prev, bob, PointJoint{ { -9.0f, 8, -5 } });
+
+    BodyDesc spun = body({ -12, 3, 2 });
+    spun.angularVelocity = { 1, 3, 0.5f };
+    const BodyId beam = s.add(spun, shape(Box{ { 0.6f, 0.15f, 0.15f } }), solid(1));
+    const BodyId post = s.add(body({ -11.55f, 3.75f, 2 }), shape(Box{ { 0.15f, 0.6f, 0.15f } }), solid(1));
+    join(s, beam, post, FixedJoint{ { -11.55f, 3.15f, 2 } });
+
+    BodyDesc swung = body({ -7.9f, 1.2f, 2 });
+    swung.angularVelocity = { 0, 3, 0 };
+    swung.linearVelocity = { 0, 0, -1.8f };
+    const BodyId door = s.add(swung, shape(Box{ { 0.6f, 1.0f, 0.06f } }), solid(3));
+    HingeJoint dj{ { -8.5f, 1.2f, 2 }, { 0, 1, 0 } };
+    dj.limited = true;
+    dj.lowerAngle = -1.6f;
+    dj.upperAngle = 1.6f;
+    join(s, BodyId{}, door, dj);
+
+    for (int i = 0; i < 2; ++i) {
+        const float z = 1.2f + 1.6f * (float)i;
+        const BodyId arm = s.add(body({ -3.2f, 4, z }), shape(Box{ { 0.8f, 0.05f, 0.05f } }), solid(i));
+        ShapeDesc weight = shape(Sphere{ 0.25f });
+        weight.position = { 0.8f, 0, 0 };
+        s.attach(arm, weight, solid(i));
+        HingeJoint pj{ { -4, 4, z }, { 0, 0, 1 } };
+        pj.maxMotorTorque = 0.12f * (float)i;
+        join(s, BodyId{}, arm, pj);
+    }
+
+    const Quat tilt = Quat::axisAngle({ 0, 0, 1 }, 0.4f);
+    const Vec3 railAt{ 0, 2.5f, 2 };
+    const BodyId rail = s.add(body(railAt, MotionType::Static, tilt), shape(Box{ { 1.6f, 0.05f, 0.15f } }), kStatic);
+    const Vec3 blockAt = railAt + tilt.rotate({ 1.2f, 0.26f, 0 });
+    const BodyId block = s.add(body(blockAt, MotionType::Dynamic, tilt), shape(Box{ { 0.2f, 0.2f, 0.2f } }), solid(2));
+    SliderJoint rj{ blockAt, tilt.rotate({ 1, 0, 0 }) };
+    rj.limited = true;
+    rj.lowerTranslation = -2.4f;
+    rj.upperTranslation = 0.2f;
+    join(s, rail, block, rj);
+
+    const float hangX[] = { 7.0f, 8.5f, 10.0f };
+    const Vec3 hangFrom[] = { { 0, -1.5f, 1.2f }, { 0, -1.2f, 1.5f }, { 0, -1.5f, 1.2f } };
+    for (int i = 0; i < 3; ++i) {
+        const Vec3 top{ hangX[i], 5, 2 };
+        const BodyId ball = s.add(body(top + hangFrom[i]), shape(Sphere{ 0.3f }), solid(i + 1));
+        DistanceJoint dj2{ top, top + hangFrom[i] };
+        if (i == 1) {
+            dj2.limited = true;
+            dj2.maxDistance = 2.4f;
+        } else if (i == 2) {
+            dj2.length = 1.5f;
+            dj2.hertz = 1.5f;
+            dj2.dampingRatio = 0.05f;
+        }
+        join(s, BodyId{}, ball, dj2);
+    }
+
+    prev = BodyId{};
+    for (int i = 0; i < 8; ++i) {
+        const float x = 12.0f + 0.5f * (float)i;
+        const BodyId link = s.add(planar({ x + 0.25f, 5, 2 }), shape(Box{ { 0.24f, 0.05f, 0.05f } }), flat(i));
+        join(s, prev, link, HingeJoint{ { x, 5, 2 }, { 0, 0, 1 } });
+        prev = link;
+    }
+    s.add(body({ 13.5f, 2.5f, 2 }, MotionType::Static), shape(Sphere{ 0.2f }), kStatic);
+
+    s.add(body({ -4.25f, 1.5f, -5 }, MotionType::Static), shape(Box{ { 0.25f, 1.5f, 0.7f } }), kStatic);
+    s.add(body({ 4.25f, 1.5f, -5 }, MotionType::Static), shape(Box{ { 0.25f, 1.5f, 0.7f } }), kStatic);
+    prev = BodyId{};
+    for (int i = 0; i < 16; ++i) {
+        const float x = -4.0f + 0.5f * (float)i;
+        const BodyId plank = s.add(body({ x + 0.25f, 3, -5 }), shape(Box{ { 0.24f, 0.05f, 0.6f } }), solid(i));
+        join(s, prev, plank, HingeJoint{ { x, 3, -5 }, { 0, 0, 1 } });
+        prev = plank;
+    }
+    join(s, BodyId{}, prev, HingeJoint{ { 4, 3, -5 }, { 0, 0, 1 } });
+    for (int i = 0; i < 6; ++i) {
+        const Vec3 p{ -2.5f + 1.0f * (float)i, 4.5f + 0.7f * (float)i, -5 };
+        s.add(body(p), shape(i % 2 == 0 ? Geometry{ Box{ { 0.3f, 0.3f, 0.3f } } } : Geometry{ Sphere{ 0.3f } }), solid(i));
+    }
+
+    const BodyId wheel = s.add(body({ 9, 2.4f, -5 }), shape(Cylinder{ 0.3f, 0.8f }), solid(1));
+    for (int i = 0; i < 4; ++i) {
+        ShapeDesc paddle = shape(Box{ { 0.7f, 0.05f, 0.75f } });
+        const Quat q = Quat::axisAngle({ 0, 0, 1 }, 0.5f * kPi * (float)i);
+        paddle.position = q.rotate({ 1.0f, 0, 0 });
+        paddle.rotation = q;
+        s.attach(wheel, paddle, solid(1));
+    }
+    HingeJoint wj{ { 9, 2.4f, -5 }, { 0, 0, 1 } };
+    wj.motorSpeed = 1.5f;
+    wj.maxMotorTorque = 200.0f;
+    join(s, BodyId{}, wheel, wj);
+    Rng rng;
+    for (int i = 0; i < 12; ++i) {
+        s.add(body({ rng.range(7.5f, 10.5f), 5.0f + 0.6f * (float)i, rng.range(-5.5f, -4.5f) }), shape(Sphere{ 0.2f }),
+              solid(i));
+    }
+}
+
 }
 
 BodyId Scene::add(const BodyDesc& desc, const ShapeDesc& shapeDesc, Color color) {
@@ -366,6 +501,8 @@ const std::vector<SceneInfo>& sceneList() {
           0.7f, 0.4f },
         { "Cutouts", "Traced 2D layers with holes and concave outlines, catching on pegs and piling into a traced bowl.",
           cutouts, { 0, 4.5f, 0 }, 17, 0.25f, 0.15f },
+        { "Joints", "A point chain, a weld, a door, pendulums with and without friction, a slider rail, a motor lift, a rod, "
+          "a rope, a spring, a planar chain, a bridge and a motor wheel.", joints, { 1, 3, -1 }, 34, 0.5f, 0.3f },
     };
     return scenes;
 }

@@ -438,6 +438,8 @@ struct App {
         ImGui::Checkbox("Velocities", &draw.velocities);
         ImGui::SameLine(px(160));
         ImGui::Checkbox("Lock planes", &draw.planes);
+        ImGui::Checkbox("Joints", &draw.joints);
+        ImGui::SameLine(px(160));
         ImGui::Checkbox("Only the selected body", &draw.selectedOnly);
     }
 

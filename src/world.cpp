@@ -12,6 +12,8 @@ namespace {
 
 constexpr float kAligned = 0.9999f;
 
+constexpr int kSettleIterations = 2;
+
 // How far past its bounds a shape's leaf in the tree reaches, in meters.
 constexpr float kTreeMargin = 0.1f;
 
@@ -138,9 +140,18 @@ struct World::Impl {
     // pairs were last found.
     std::vector<uint64_t> leafPairs;
     std::vector<uint32_t> refitted;
+    std::vector<Joint> joints;
+    std::vector<uint32_t> freeJoints;
+    // Body pairs held by a joint that keeps them from colliding, sorted.
+    std::vector<uint64_t> joinedPairs;
+    Body worldBody;
     StepProfile profile;
 
-    explicit Impl(const WorldSettings& s) { apply(s); }
+    explicit Impl(const WorldSettings& s) {
+        worldBody.alive = true;
+        worldBody.type = MotionType::Static;
+        apply(s);
+    }
 
     void apply(const WorldSettings& s) {
         settings = s;
@@ -222,6 +233,48 @@ struct World::Impl {
         return (s.alive && s.generation == id.generation) ? &s : nullptr;
     }
     const Shape* get(ShapeId id) const { return const_cast<Impl*>(this)->get(id); }
+
+    Joint* get(JointId id) {
+        if (id.index >= joints.size()) { return nullptr; }
+        Joint& j = joints[id.index];
+        return (j.alive && j.generation == id.generation) ? &j : nullptr;
+    }
+    const Joint* get(JointId id) const { return const_cast<Impl*>(this)->get(id); }
+
+    Body& end(uint32_t i) { return i == kWorldBody ? worldBody : bodies[i]; }
+    const Body& end(uint32_t i) const { return i == kWorldBody ? worldBody : bodies[i]; }
+
+    void updateJoinedPairs() {
+        joinedPairs.clear();
+        for (const Joint& j : joints) {
+            if (!j.alive || j.collideConnected || j.bodyA == kWorldBody) { continue; }
+            joinedPairs.push_back(pairKey(std::min(j.bodyA, j.bodyB), std::max(j.bodyA, j.bodyB)));
+        }
+        std::sort(joinedPairs.begin(), joinedPairs.end());
+    }
+
+    bool joined(uint32_t a, uint32_t b) const {
+        return !joinedPairs.empty() &&
+               std::binary_search(joinedPairs.begin(), joinedPairs.end(), pairKey(std::min(a, b), std::max(a, b)));
+    }
+
+    // Wakes the dynamic bodies of a joint, without spreading through a static or kinematic end.
+    void wakeJoint(const Joint& j) {
+        std::vector<uint32_t> start;
+        for (uint32_t i : { j.bodyA, j.bodyB }) {
+            if (i != kWorldBody && bodies[i].type == MotionType::Dynamic) { start.push_back(i); }
+        }
+        wakeBodies(start);
+    }
+
+    void destroyJoint(uint32_t ji) {
+        Joint& j = joints[ji];
+        wakeJoint(j);
+        j.alive = false;
+        ++j.generation;
+        freeJoints.push_back(ji);
+        updateJoinedPairs();
+    }
 
     BodyId bodyId(uint32_t i) const { return { i, bodies[i].generation }; }
     ShapeId shapeId(uint32_t i) const { return { i, shapes[i].generation }; }
@@ -350,6 +403,11 @@ struct World::Impl {
             adjacency[c.bodyA].push_back(c.bodyB);
             adjacency[c.bodyB].push_back(c.bodyA);
         }
+        for (const Joint& j : joints) {
+            if (!j.alive || j.bodyA == kWorldBody) { continue; }
+            adjacency[j.bodyA].push_back(j.bodyB);
+            adjacency[j.bodyB].push_back(j.bodyA);
+        }
         for (uint32_t i : start) {
             if (!bodies[i].alive || bodies[i].type == MotionType::Dynamic) { continue; }
             for (uint32_t j : adjacency[i]) {
@@ -428,6 +486,7 @@ struct World::Impl {
             const Vec3 gb{ grow[sb.body], grow[sb.body], grow[sb.body] };
             if (!boxesOverlap(sa.lo - ga, sa.hi + ga, sb.lo - gb, sb.hi + gb)) { return; }
             if (!(sa.category & sb.mask) || !(sb.category & sa.mask)) { return; }
+            if (joined(sa.body, sb.body)) { return; }
             out.push_back(pairKey(std::min(ia, ib), std::max(ia, ib)));
         };
 
@@ -690,6 +749,21 @@ struct World::Impl {
                 b.sleepTime = 0.0f;
             }
         }
+        for (const Joint& j : joints) {
+            if (!j.alive) { continue; }
+            Body& a = end(j.bodyA);
+            Body& b = end(j.bodyB);
+            const bool da = a.type == MotionType::Dynamic && a.awake;
+            const bool db = b.type == MotionType::Dynamic && b.awake;
+            if (da && db) {
+                const uint32_t ra = find(j.bodyA), rb = find(j.bodyB);
+                if (ra != rb) { parent[std::max(ra, rb)] = std::min(ra, rb); }
+            } else if (da && b.type == MotionType::Kinematic && movingAwake(b)) {
+                a.sleepTime = 0.0f;
+            } else if (db && a.type == MotionType::Kinematic && movingAwake(a)) {
+                b.sleepTime = 0.0f;
+            }
+        }
 
         std::vector<float> islandTime(bodies.size(), FLT_MAX);
         profile.awakeBodies = 0;
@@ -779,7 +853,7 @@ struct World::Impl {
             const Shape& sf = shapes[fi];
             forEachNear(sf, sweptLo[fi], sweptHi[fi], [&](uint32_t oi) {
                 const Shape& so = shapes[oi];
-                if (so.body == sf.body) { return; }
+                if (so.body == sf.body || joined(so.body, sf.body)) { return; }
                 sweptBounds(oi);
                 if (!boxesOverlap(sweptLo[fi], sweptHi[fi], sweptLo[oi], sweptHi[oi])) { return; }
                 if (!(sf.category & so.mask) || !(so.category & sf.mask)) { return; }
@@ -846,6 +920,16 @@ struct World::Impl {
         const int n = std::max(1, settings.substeps);
         const float h = dt / (float)n;
 
+        std::vector<uint32_t> pulled;
+        for (const Joint& j : joints) {
+            if (!j.alive) { continue; }
+            const Body& a = end(j.bodyA);
+            const Body& b = end(j.bodyB);
+            if (a.type == MotionType::Dynamic && !a.awake && movingAwake(b)) { pulled.push_back(j.bodyA); }
+            if (b.type == MotionType::Dynamic && !b.awake && movingAwake(a)) { pulled.push_back(j.bodyB); }
+        }
+        wakeBodies(pulled);
+
         updateContacts(dt);
 
         for (Body& b : bodies) {
@@ -870,32 +954,53 @@ struct World::Impl {
             }
         }
 
+        std::vector<uint32_t> activeJoints;
+        for (uint32_t i = 0; i < joints.size(); ++i) {
+            const Joint& j = joints[i];
+            if (!j.alive) { continue; }
+            const Body& a = end(j.bodyA);
+            const Body& b = end(j.bodyB);
+            if ((a.type == MotionType::Dynamic && a.awake) || (b.type == MotionType::Dynamic && b.awake)) {
+                activeJoints.push_back(i);
+            }
+        }
+
         SolverContext ctx;
         ctx.h = h;
         ctx.invH = 1.0f / h;
         const float hertz = std::fmin(settings.contactHertz, 0.25f * ctx.invH);
         ctx.contactSoft = makeSoft(hertz, settings.contactDampingRatio, h);
         ctx.staticSoft = makeSoft(2.0f * hertz, settings.contactDampingRatio, h);
+        ctx.jointSoft = makeSoft(std::fmin(settings.jointHertz, 0.5f * ctx.invH), settings.jointDampingRatio, h);
         ctx.maxPushout = settings.maxPushoutSpeed * settings.lengthUnit;
         ctx.restitutionThreshold = settings.restitutionThreshold * settings.lengthUnit;
 
         const Clock::time_point solveStart = Clock::now();
         axes.resize(4 * contacts.size());
-        SolverData data{ bodies, contacts, axes };
+        SolverData data{ bodies, contacts, axes, joints, worldBody };
         prepareContacts(data, active);
         const std::vector<uint32_t> impact = impactContacts(active, ctx.restitutionThreshold);
         for (int i = 0; i < n; ++i) {
             if (i > 0 && i == n / 2 && !fast.empty()) { refreshContacts(active, fast, (float)(n - i) * h); }
             integrateVelocities(h);
+            warmStartJoints(data, activeJoints);
             warmStart(data, active);
+            solveJoints(data, activeJoints, ctx, true);
             solveContacts(data, active, ctx, true);
             if (!impact.empty()) { solveContacts(data, impact, ctx, true); }
             integratePositions(h);
             updateResponses(data, active);
+            solveJoints(data, activeJoints, ctx, false);
             solveContacts(data, active, ctx, false);
             if (!impact.empty()) { solveContacts(data, impact, ctx, false); }
         }
         applyRestitution(data, active, ctx);
+        if (!activeJoints.empty()) {
+            settleJoints(data, activeJoints, kSettleIterations);
+            for (Body& b : bodies) {
+                if (b.alive && b.type == MotionType::Dynamic && b.awake) { updateInverseMass(b); }
+            }
+        }
         profile.solver = millisecondsSince(solveStart);
         profile.touchingContacts = 0;
         for (const Contact& c : contacts) {
@@ -992,6 +1097,10 @@ void World::destroyBody(BodyId id) {
     Body* b = w.get(id);
     if (!b) { return; }
     w.removeContacts(id.index, -1);
+    for (uint32_t ji = 0; ji < w.joints.size(); ++ji) {
+        const Joint& j = w.joints[ji];
+        if (j.alive && (j.bodyA == id.index || j.bodyB == id.index)) { w.destroyJoint(ji); }
+    }
     for (uint32_t si : b->shapes) {
         w.untrack(si);
         w.shapes[si].alive = false;
@@ -1377,6 +1486,148 @@ uint32_t World::island(BodyId id) const {
 void* World::userData(BodyId id) const {
     const Body* b = impl_->get(id);
     return b ? b->userData : nullptr;
+}
+
+JointId World::createJoint(const JointDesc& d) {
+    Impl& w = *impl_;
+    if (!w.get(d.bodyB)) { return {}; }
+    uint32_t ai = kWorldBody;
+    if (d.bodyA.index != UINT32_MAX) {
+        if (!w.get(d.bodyA) || d.bodyA.index == d.bodyB.index) { return {}; }
+        ai = d.bodyA.index;
+    }
+    uint32_t i;
+    if (!w.freeJoints.empty()) {
+        i = w.freeJoints.back();
+        w.freeJoints.pop_back();
+    } else {
+        i = (uint32_t)w.joints.size();
+        w.joints.emplace_back();
+    }
+    Joint& j = w.joints[i];
+    const uint32_t gen = j.generation;
+    j = Joint{};
+    j.generation = gen;
+    j.alive = true;
+    j.type = (JointType)d.kind.index();
+    j.bodyA = ai;
+    j.bodyB = d.bodyB.index;
+    j.collideConnected = d.collideConnected;
+    j.userData = d.userData;
+
+    const Body& a = w.end(j.bodyA);
+    const Body& b = w.end(j.bodyB);
+    Vec3 anchorA, anchorB, axis{ 1, 0, 0 };
+    if (const PointJoint* pj = std::get_if<PointJoint>(&d.kind)) {
+        anchorA = anchorB = pj->anchor;
+    } else if (const FixedJoint* fj = std::get_if<FixedJoint>(&d.kind)) {
+        anchorA = anchorB = fj->anchor;
+    } else if (const HingeJoint* hj = std::get_if<HingeJoint>(&d.kind)) {
+        anchorA = anchorB = hj->anchor;
+        axis = normalize(hj->axis);
+        j.limited = hj->limited;
+        j.lower = hj->lowerAngle;
+        j.upper = hj->upperAngle;
+        j.motorSpeed = hj->motorSpeed;
+        j.maxMotor = hj->maxMotorTorque;
+    } else if (const SliderJoint* sj = std::get_if<SliderJoint>(&d.kind)) {
+        anchorA = anchorB = sj->anchor;
+        axis = normalize(sj->axis);
+        j.limited = sj->limited;
+        j.lower = sj->lowerTranslation;
+        j.upper = sj->upperTranslation;
+        j.motorSpeed = sj->motorSpeed;
+        j.maxMotor = sj->maxMotorForce;
+    } else if (const DistanceJoint* dj = std::get_if<DistanceJoint>(&d.kind)) {
+        anchorA = dj->anchorA;
+        anchorB = dj->anchorB;
+        j.length = dj->length < 0.0f ? length(anchorB - anchorA) : dj->length;
+        j.hertz = dj->hertz;
+        j.dampingRatio = dj->dampingRatio;
+        j.limited = dj->limited;
+        j.lower = dj->minDistance;
+        j.upper = dj->maxDistance;
+    }
+    const Vec3 ref = perpendicular(axis);
+    j.localA = a.xf.applyInverse(anchorA);
+    j.localB = b.xf.applyInverse(anchorB);
+    j.axisA = a.xf.q.unrotate(axis);
+    j.axisB = b.xf.q.unrotate(axis);
+    j.refA = a.xf.q.unrotate(ref);
+    j.refB = b.xf.q.unrotate(ref);
+    j.restTurn = a.xf.q.conjugate() * b.xf.q;
+
+    if (!j.collideConnected && ai != kWorldBody) {
+        w.contacts.erase(std::remove_if(w.contacts.begin(), w.contacts.end(), [&](const Contact& c) {
+            return (c.bodyA == j.bodyA && c.bodyB == j.bodyB) || (c.bodyA == j.bodyB && c.bodyB == j.bodyA);
+        }), w.contacts.end());
+    }
+    w.updateJoinedPairs();
+    w.wakeJoint(j);
+    return { i, j.generation };
+}
+
+void World::destroyJoint(JointId id) {
+    if (impl_->get(id)) { impl_->destroyJoint(id.index); }
+}
+
+bool World::isValid(JointId id) const { return impl_->get(id) != nullptr; }
+
+void World::setJointLimits(JointId id, bool limited, float lower, float upper) {
+    Impl& w = *impl_;
+    Joint* j = w.get(id);
+    if (!j) { return; }
+    j->limited = limited;
+    j->lower = lower;
+    j->upper = upper;
+    j->lowerImpulse = 0.0f;
+    j->upperImpulse = 0.0f;
+    w.wakeJoint(*j);
+}
+
+void World::setJointMotor(JointId id, float speed, float maxForce) {
+    Impl& w = *impl_;
+    Joint* j = w.get(id);
+    if (!j) { return; }
+    j->motorSpeed = speed;
+    j->maxMotor = maxForce;
+    w.wakeJoint(*j);
+}
+
+void World::setJointSpring(JointId id, float hertz, float dampingRatio) {
+    Impl& w = *impl_;
+    Joint* j = w.get(id);
+    if (!j) { return; }
+    j->hertz = hertz;
+    j->dampingRatio = dampingRatio;
+    w.wakeJoint(*j);
+}
+
+std::vector<JointInfo> World::joints() const {
+    const Impl& w = *impl_;
+    std::vector<JointInfo> out;
+    for (uint32_t i = 0; i < w.joints.size(); ++i) {
+        const Joint& j = w.joints[i];
+        if (!j.alive) { continue; }
+        const Body& a = w.end(j.bodyA);
+        const Body& b = w.end(j.bodyB);
+        JointInfo info;
+        info.joint = { i, j.generation };
+        info.type = j.type;
+        if (j.bodyA != kWorldBody) { info.bodyA = w.bodyId(j.bodyA); }
+        info.bodyB = w.bodyId(j.bodyB);
+        info.anchorA = a.xf.apply(j.localA);
+        info.anchorB = b.xf.apply(j.localB);
+        info.axis = a.xf.q.rotate(j.axisA);
+        info.value = jointValue(j, a, b);
+        out.push_back(info);
+    }
+    return out;
+}
+
+void* World::userData(JointId id) const {
+    const Joint* j = impl_->get(id);
+    return j ? j->userData : nullptr;
 }
 
 void* World::userData(ShapeId id) const {

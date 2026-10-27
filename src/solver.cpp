@@ -2,8 +2,6 @@
 
 namespace twofold {
 
-namespace {
-
 Axis makeAxis(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, const Vec3& d) {
     Axis x;
     x.armA = cross(ra, d);
@@ -18,15 +16,6 @@ Axis makeAxis(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, cons
     return x;
 }
 
-void makeAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {
-    for (int i = 0; i < c.count; ++i) {
-        const ContactPoint& p = c.points[i];
-        axes[i].normal = makeAxis(a, b, p.anchorA, p.anchorB, c.normal);
-        axes[i].tangent1 = makeAxis(a, b, p.anchorA, p.anchorB, c.tangent1);
-        axes[i].tangent2 = makeAxis(a, b, p.anchorA, p.anchorB, c.tangent2);
-    }
-}
-
 float speedAlong(const Body& a, const Body& b, const Vec3& d, const Axis& x) {
     return dot(d, b.v - a.v) + dot(x.armB, b.w) - dot(x.armA, a.w);
 }
@@ -36,6 +25,17 @@ void push(Body& a, Body& b, const Axis& x, float impulse) {
     a.w -= x.angularA * impulse;
     b.v += x.linearB * impulse;
     b.w += x.angularB * impulse;
+}
+
+namespace {
+
+void makeAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {
+    for (int i = 0; i < c.count; ++i) {
+        const ContactPoint& p = c.points[i];
+        axes[i].normal = makeAxis(a, b, p.anchorA, p.anchorB, c.normal);
+        axes[i].tangent1 = makeAxis(a, b, p.anchorA, p.anchorB, c.tangent1);
+        axes[i].tangent2 = makeAxis(a, b, p.anchorA, p.anchorB, c.tangent2);
+    }
 }
 
 bool anchored(const Body& b) { return b.type != MotionType::Dynamic || !b.awake; }

@@ -3,6 +3,48 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 18:41
+
+Joints: point, fixed, hinge, slider and distance. Hinges and sliders take limits and a
+motor, and a motor at speed zero works as friction. A distance joint is a rod, a rope with
+only a maximum, or a damped spring. Leaving body A unset joins B to the world, like the
+ground body in Box2D but without having to make one. Joined bodies skip collision with
+each other, joints tie islands together for sleeping, and destroying a body takes its
+joints with it.
+
+They solve like the contacts, soft in the biased pass and rigid in the relax pass, at
+60 Hz. A 12 link chain with a ball about 200 times heavier than a link stretched more than
+I liked, so two settle iterations after restitution move the bodies to close what's left.
+Dropping to 30 Hz made the chain four times worse. Put the same chain in Jolt at its
+default 10 velocity and 2 position steps to see where that stands:
+
+| Case | Total stretch | Jolt |
+| --- | --- | --- |
+| Swinging | 0.20 m | 2.22 m |
+| Hanging still | 0.17 m | 0.30 m |
+| Hanging still, ball 21 times a link | 0.023 m | 0.046 m |
+
+Good enough to leave without a tree solver.
+
+The test scene found a bounce. A door swinging into its limit came back off it at 14% of
+the speed it hit with, a slider with its anchor off center at 38%. The limit row only
+turned the door about its own center, the point row then had to pull the center back
+round the hinge, and between them the warm started point impulse came back as spin the
+wrong way. Taking warm starting off the limits or turning off the settle pass did
+nothing. Jolt's order, limits last, was worse. Softer joints helped but brought the
+stretch back.
+
+What fixed it was making the hinge's limit and motor rows carry the point impulse that a
+turn about the axis needs to keep the anchors together, so the row's mass is that of
+turning about the anchor. Same for the slider's rows with the turn that keeps it from
+rotating. Both now stop dead at the limit.
+
+Added a Joints scene to the viewer with every type: chain, weld, door, pendulums with and
+without friction, a rail, a motor lift, rod, rope, spring, a planar chain on a peg, a
+plank bridge and a paddle wheel. Joints draw in their own color with their axes, and a
+red line wherever two anchors that should meet have come apart. Every older scene steps
+bit for bit as before.
+
 ## 2026-10-27 16:16
 
 Broadphase. Sort and sweep sorted every shape every step, sleeping or not, and Cutouts spent

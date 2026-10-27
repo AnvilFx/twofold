@@ -267,6 +267,36 @@ struct Contact {
     }
 };
 
+// Joint ends that use this index are fixed in the world.
+constexpr uint32_t kWorldBody = UINT32_MAX;
+
+struct Joint {
+    uint32_t generation = 0;
+    bool alive = false;
+    JointType type = JointType::Point;
+    uint32_t bodyA = kWorldBody, bodyB = 0;
+    bool collideConnected = false;
+    void* userData = nullptr;
+
+    // Anchors, axis and a reference perpendicular to the axis, in each body's frame.
+    Vec3 localA, localB;
+    Vec3 axisA, axisB;
+    Vec3 refA, refB;
+    // Body B's rotation in body A's frame when joined.
+    Quat restTurn;
+    float length = 0.0f;
+    bool limited = false;
+    float lower = 0.0f, upper = 0.0f;
+    float motorSpeed = 0.0f, maxMotor = 0.0f;
+    float hertz = 0.0f, dampingRatio = 0.0f;
+
+    Vec3 linearImpulse;
+    Vec3 angularImpulse;
+    float axialImpulse = 0.0f;
+    float motorImpulse = 0.0f;
+    float lowerImpulse = 0.0f, upperImpulse = 0.0f;
+};
+
 struct Softness {
     float biasRate = 0.0f;
     float massScale = 1.0f;
@@ -280,6 +310,7 @@ struct SolverContext {
     float invH = 0.0f;
     Softness contactSoft;
     Softness staticSoft;
+    Softness jointSoft;
     float maxPushout = 0.0f;
     float restitutionThreshold = 0.0f;
 };
@@ -288,7 +319,14 @@ struct SolverData {
     std::vector<Body>& bodies;
     std::vector<Contact>& contacts;
     std::vector<PointAxes>& axes;
+    std::vector<Joint>& joints;
+    // Stands in for the world at joint ends fixed in it.
+    Body& world;
 };
+
+Axis makeAxis(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, const Vec3& d);
+float speedAlong(const Body& a, const Body& b, const Vec3& d, const Axis& x);
+void push(Body& a, Body& b, const Axis& x, float impulse);
 
 void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes);
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active);
@@ -299,5 +337,12 @@ void updateResponses(SolverData& s, const std::vector<uint32_t>& active);
 void warmStart(SolverData& s, const std::vector<uint32_t>& active);
 void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias);
 void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx);
+
+void warmStartJoints(SolverData& s, const std::vector<uint32_t>& active);
+void solveJoints(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias);
+// Moves joined bodies back together without changing their velocities.
+void settleJoints(SolverData& s, const std::vector<uint32_t>& active, int iterations);
+// The hinge angle, slider translation or distance.
+float jointValue(const Joint& j, const Body& a, const Body& b);
 
 }
