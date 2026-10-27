@@ -19,6 +19,7 @@ struct Scene {
     std::vector<twofold::BodyId> bodies;
     std::vector<Visual> visuals;
     std::vector<twofold::BodyId> driven;
+    std::vector<twofold::JointId> joints;
     float dt = 1.0f / 60.0f;
     float time = 0.0f;
     void (*update)(Scene& scene, float dt) = nullptr;

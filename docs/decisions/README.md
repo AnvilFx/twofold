@@ -20,3 +20,5 @@ replaces the old one instead of editing it.
 14. [Edge queries pair edges near the overlap](0014-edge-queries-pair-edges-near-the-overlap.md)
 15. [Pairs that barely moved keep their contacts](0015-pairs-that-barely-moved-keep-their-contacts.md)
 16. [A bounds tree with persistent pairs](0016-bounds-tree-with-persistent-pairs.md)
+17. [Soft joints with a settle pass](0017-soft-joints-with-a-settle-pass.md)
+18. [Limits and motors move the whole joint](0018-limits-and-motors-move-the-whole-joint.md)

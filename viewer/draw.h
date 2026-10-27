@@ -17,6 +17,7 @@ struct DrawOptions {
     bool centers = false;
     bool velocities = false;
     bool planes = false;
+    bool joints = true;
 };
 
 void drawScene(const Scene& scene, const DrawOptions& options, const twofold::Vec3& focus, twofold::BodyId selected);
