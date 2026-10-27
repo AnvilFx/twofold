@@ -3,6 +3,21 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 22:13
+
+Exact cylinders. The 24-sided prisms bobbed and lost speed on every side, which shows on
+anything that rolls. Cylinder pairs now test feature axes from faces, cylinder axes and
+edge and axis crosses, with GJK directions where a rim meets an edge. A cap contact is 24
+rim points.
+
+The first version had contacts 80 to 240 mm deep between cylinders that were really 2 to
+7 mm into each other. GJK was calling a nearly flat tetrahedron an overlap. Curved supports
+make those flat simplices common. Faces too flat to tell their inside from rounding now
+count as facing the origin.
+
+Rolling resistance, so the exact shapes can stop. One angular impulse along the relative
+spin, clamped as a vector, so a planar disc only takes impulse about the axis it turns on.
+
 ## 2026-10-27 19:19
 
 Triangle meshes, for static and kinematic bodies. `TriangleMesh` takes vertices and

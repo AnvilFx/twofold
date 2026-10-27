@@ -8,7 +8,6 @@ namespace twofold {
 namespace {
 
 constexpr float kPi = 3.14159265358979f;
-constexpr int kCylinderSides = 24;
 
 std::vector<Vec2> counterClockwise(std::vector<Vec2> poly) {
     float area = 0.0f;
@@ -17,20 +16,27 @@ std::vector<Vec2> counterClockwise(std::vector<Vec2> poly) {
     return poly;
 }
 
-std::vector<Vec2> regularPolygon(float radius, int sides) {
-    std::vector<Vec2> poly;
-    for (int i = 0; i < sides; ++i) {
-        const float a = 2.0f * kPi * (float)i / (float)sides;
-        poly.push_back({ radius * std::cos(a), radius * std::sin(a) });
-    }
-    return poly;
 }
 
+Vec3 cylinderReach(const Vec3& axis, float radius, float halfHeight) {
+    Vec3 r;
+    for (int i = 0; i < 3; ++i) {
+        r[i] = halfHeight * std::fabs(axis[i]) + radius * std::sqrt(std::fmax(1.0f - axis[i] * axis[i], 0.0f));
+    }
+    return r;
+}
+
+Vec3 cylinderSupport(float radius, float halfHeight, const Vec3& d) {
+    const float z = d.z < 0.0f ? -halfHeight : halfHeight;
+    const float side = std::sqrt(d.x * d.x + d.y * d.y);
+    if (side == 0.0f) { return { 0.0f, 0.0f, z }; }
+    return { d.x * (radius / side), d.y * (radius / side), z };
 }
 
 void buildShape(Shape& s) {
     s.poly = Polyhedron{};
     s.radius = 0.0f;
+    s.halfHeight = 0.0f;
     s.centroid = Vec3{};
     if (const Sphere* sp = std::get_if<Sphere>(&s.geometry)) {
         s.kind = ShapeKind::Sphere;
@@ -40,8 +46,10 @@ void buildShape(Shape& s) {
         s.kind = ShapeKind::Convex;
         s.poly = makeBox(bx->halfExtents);
     } else if (const Cylinder* cy = std::get_if<Cylinder>(&s.geometry)) {
-        s.kind = ShapeKind::Convex;
-        s.poly = makePrism(regularPolygon(cy->radius, kCylinderSides), -cy->halfHeight, cy->halfHeight);
+        s.kind = ShapeKind::Cylinder;
+        s.radius = cy->radius;
+        s.halfHeight = cy->halfHeight;
+        s.extent = std::sqrt(cy->radius * cy->radius + cy->halfHeight * cy->halfHeight);
     } else if (Prism* pr = std::get_if<Prism>(&s.geometry)) {
         s.kind = ShapeKind::Convex;
         pr->polygon = counterClockwise(pr->polygon);
@@ -67,7 +75,7 @@ void buildShape(Shape& s) {
         s.kind = ShapeKind::HalfSpace;
         s.extent = 0.0f;
     }
-    s.minExtent = s.radius;
+    s.minExtent = s.kind == ShapeKind::Cylinder ? std::min(s.radius, s.halfHeight) : s.radius;
     if (s.kind == ShapeKind::Convex) {
         float e = 0.0f;
         for (const Vec3& v : s.poly.vertices) { e = std::max(e, length(v)); }
@@ -112,6 +120,12 @@ void shapeBounds(const Shape& s, const Transform& xf, Vec3& lo, Vec3& hi) {
     }
     if (s.kind == ShapeKind::Sphere) {
         const Vec3 r{ s.radius, s.radius, s.radius };
+        lo = xf.p - r;
+        hi = xf.p + r;
+        return;
+    }
+    if (s.kind == ShapeKind::Cylinder) {
+        const Vec3 r = cylinderReach(xf.q.rotate({ 0, 0, 1 }), s.radius, s.halfHeight);
         lo = xf.p - r;
         hi = xf.p + r;
         return;

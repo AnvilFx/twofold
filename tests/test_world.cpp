@@ -749,6 +749,117 @@ TEST(tumbling_cylinders_do_not_sink_into_ground) {
     CHECK(deepest < 0.02f);
 }
 
+TEST(cylinder_rolls_on_its_side_at_a_constant_height) {
+    World w;
+    addGround(w);
+    BodyDesc bd;
+    bd.position = { 0, 0.3f, 0 };
+    bd.linearVelocity = { 2, 0, 0 };
+    bd.angularVelocity = { 0, 0, -2.0f / 0.3f };
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Cylinder{ 0.3f, 0.3f };
+    w.addShape(b, sd);
+    float lowest = 1.0f, highest = 0.0f;
+    for (int f = 0; f < 120; ++f) {
+        w.step(kDt);
+        lowest = std::fmin(lowest, w.position(b).y);
+        highest = std::fmax(highest, w.position(b).y);
+    }
+    CHECK(lowest > 0.298f && highest < 0.302f);
+    CHECK_NEAR(w.linearVelocity(b).x, 2.0f, 0.02f);
+}
+
+TEST(cylinders_rest_on_a_box_lying_and_standing) {
+    World w;
+    addBox(w, { 0, -0.5f, 0 }, { 3, 0.5f, 3 }, MotionType::Static);
+    BodyDesc lying;
+    lying.position = { -1, 0.35f, 0 };
+    const BodyId a = w.createBody(lying);
+    BodyDesc standing;
+    standing.position = { 1, 0.45f, 0 };
+    standing.rotation = kUp;
+    const BodyId b = w.createBody(standing);
+    ShapeDesc sd;
+    sd.geometry = Cylinder{ 0.3f, 0.4f };
+    w.addShape(a, sd);
+    w.addShape(b, sd);
+    run(w, 2.0f);
+    CHECK(!w.isAwake(a) && !w.isAwake(b));
+    CHECK(deepestContact(w) < 0.005f);
+    CHECK_NEAR(w.position(a).y, 0.3f, 0.005f);
+    CHECK_NEAR(w.position(b).y, 0.4f, 0.005f);
+}
+
+TEST(standing_cylinders_stack) {
+    World w;
+    addGround(w);
+    std::vector<BodyId> ids;
+    for (int i = 0; i < 4; ++i) {
+        BodyDesc bd;
+        bd.position = { 0.03f * (float)(i % 2), 0.3f + 0.61f * (float)i, 0 };
+        bd.rotation = kUp;
+        const BodyId b = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = Cylinder{ 0.4f, 0.3f };
+        w.addShape(b, sd);
+        ids.push_back(b);
+    }
+    run(w, 3.0f);
+    for (BodyId b : ids) { CHECK(!w.isAwake(b)); }
+    CHECK(deepestContact(w) < 0.005f);
+    CHECK_NEAR(w.position(ids.back()).y, 2.1f, 0.01f);
+}
+
+// Tilted cylinders a few millimeters into each other. Contacts must not report an overlap much deeper than
+// the true one.
+TEST(crossed_cylinder_contacts_match_their_overlap) {
+    float deepest = 0.0f;
+    for (int k = 0; k < 2000; ++k) {
+        World w;
+        w.setGravity({});
+        auto jitter = [k](int j) { return 0.004f * std::sin(12.9898f * (float)(k * 7 + j) + 78.233f); };
+        BodyDesc a;
+        a.position = { 1.1586f, 0.3697f, 0.5008f };
+        a.rotation = normalize(Quat{ 0.880915f, 0.291875f, -0.359438f, -0.097993f });
+        BodyDesc b;
+        b.position = Vec3{ 1.3181f, 0.7676f, 1.1147f } + Vec3{ jitter(1), jitter(2), jitter(3) };
+        b.rotation = normalize(Quat{ -0.879479f + jitter(4), -0.195779f + jitter(5), -0.218103f + jitter(6), 0.374991f });
+        const BodyId ia = w.createBody(k % 2 ? b : a);
+        const BodyId ib = w.createBody(k % 2 ? a : b);
+        ShapeDesc sa;
+        sa.geometry = Cylinder{ 0.361f, 0.237f };
+        ShapeDesc sb;
+        sb.geometry = Cylinder{ 0.343f, 0.298f };
+        w.addShape(ia, k % 2 ? sb : sa);
+        w.addShape(ib, k % 2 ? sa : sb);
+        w.step(kDt);
+        deepest = std::fmax(deepest, deepestContact(w));
+    }
+    CHECK(deepest < 0.02f);
+}
+
+TEST(ray_hits_cylinder_side_and_cap) {
+    World w;
+    BodyDesc bd;
+    bd.type = MotionType::Static;
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Cylinder{ 0.5f, 1.0f };
+    w.addShape(b, sd);
+    RayHit hit;
+    CHECK(w.castRay({ -5, 0, 0 }, { 10, 0, 0 }, hit));
+    CHECK_NEAR(hit.fraction, 0.45f, 1e-5f);
+    CHECK_NEAR(hit.normal.x, -1.0f, 1e-5f);
+    CHECK(w.castRay({ -5, 0.499f, 0.3f }, { 10, 0, 0 }, hit));
+    CHECK_NEAR(hit.point.x, -std::sqrt(0.25f - 0.499f * 0.499f), 1e-4f);
+    CHECK(!w.castRay({ -5, 0.501f, 0.3f }, { 10, 0, 0 }, hit));
+    CHECK(w.castRay({ 0.2f, 0.1f, 5 }, { 0, 0, -10 }, hit));
+    CHECK_NEAR(hit.point.z, 1.0f, 1e-4f);
+    CHECK_NEAR(hit.normal.z, 1.0f, 1e-5f);
+    CHECK(!w.castRay({ 0, 0, 0 }, { 10, 0, 0 }, hit));
+}
+
 TEST(boxes_slide_on_slope_without_sinking) {
     float deepest = 0.0f;
     for (float friction : { 0.02f, 0.25f, 0.9f }) {
@@ -882,4 +993,78 @@ TEST(heavy_body_landing_on_a_light_one_does_not_crush_it_into_the_floor) {
         CHECK(w.isValid(light));
     }
     CHECK(worst < 0.06f);
+}
+
+TEST(ball_keeps_rolling_without_rolling_resistance) {
+    World w;
+    addGround(w);
+    const BodyId ball = addSphere(w, { 0, 0.5f, 0 }, 0.5f);
+    w.setLinearVelocity(ball, { 2, 0, 0 });
+    w.setAngularVelocity(ball, { 0, 0, -4 });
+    run(w, 3.0f);
+    CHECK_NEAR(w.linearVelocity(ball).x, 2.0f, 0.02f);
+}
+
+// Rolling resistance c takes c * g * r of work per unit of rolled distance, so a ball rolling at v stops
+// after 1.4 v^2 / (2 c g) and a disc after 1.5 v^2 / (2 c g).
+TEST(rolling_ball_stops_after_the_expected_distance) {
+    World w;
+    addGround(w);
+    BodyDesc bd;
+    bd.position = { 0, 0.5f, 0 };
+    bd.linearVelocity = { 2, 0, 0 };
+    bd.angularVelocity = { 0, 0, -4 };
+    const BodyId ball = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Sphere{ 0.5f };
+    sd.rollingResistance = 0.1f;
+    w.addShape(ball, sd);
+    run(w, 4.0f);
+    CHECK_NEAR(w.position(ball).x, 1.4f * 4.0f / (2.0f * 0.1f * 9.81f), 0.15f);
+    CHECK(length(w.linearVelocity(ball)) < 0.01f);
+    CHECK_NEAR(w.position(ball).y, 0.5f, 0.01f);
+}
+
+TEST(rolling_planar_disc_stops_after_the_expected_distance) {
+    World w;
+    addBox(w, { 0, -0.5f, 0 }, { 10, 0.5f, 1 }, MotionType::Static);
+    BodyDesc bd;
+    bd.locks = LockPlanar;
+    bd.position = { 0, 0.5f, 0 };
+    bd.linearVelocity = { 2, 0, 0 };
+    bd.angularVelocity = { 0, 0, -4 };
+    const BodyId disc = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Cylinder{ 0.5f, 0.1f };
+    sd.rollingResistance = 0.1f;
+    w.addShape(disc, sd);
+    run(w, 4.0f);
+    CHECK_NEAR(w.position(disc).x, 1.5f * 4.0f / (2.0f * 0.1f * 9.81f), 0.15f);
+    CHECK(length(w.linearVelocity(disc)) < 0.01f);
+}
+
+TEST(rolling_resistance_holds_a_ball_on_a_gentle_slope) {
+    for (float slope : { 0.05f, 0.2f }) {
+        World w;
+        BodyDesc gd;
+        gd.type = MotionType::Static;
+        gd.rotation = Quat::fromTo({ 0, 0, 1 }, normalize(Vec3{ -slope, 1, 0 }));
+        const BodyId g = w.createBody(gd);
+        ShapeDesc ground;
+        ground.geometry = HalfSpace{};
+        w.addShape(g, ground);
+        BodyDesc bd;
+        bd.position = { 0, 0.5f, 0 };
+        const BodyId ball = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = Sphere{ 0.5f };
+        sd.rollingResistance = 0.1f;
+        w.addShape(ball, sd);
+        run(w, 3.0f);
+        if (slope < 0.1f) {
+            CHECK(std::fabs(w.position(ball).x) < 0.05f);
+        } else {
+            CHECK(w.position(ball).x < -1.0f);
+        }
+    }
 }

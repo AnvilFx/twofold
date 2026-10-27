@@ -773,12 +773,15 @@ struct App {
         for (ShapeId s : w.shapes(b)) {
             ImGui::PushID((int)s.index);
             ImGui::TextUnformatted(describe(w.geometry(s)).c_str());
-            float friction = w.friction(s), restitution = w.restitution(s);
+            float friction = w.friction(s), restitution = w.restitution(s), rolling = w.rollingResistance(s);
             if (ImGui::SliderFloat("Friction", &friction, 0.0f, 1.5f, "%.2f")) {
                 edit([s, friction](Scene& sc) { sc.world.setFriction(s, friction); });
             }
             if (ImGui::SliderFloat("Restitution", &restitution, 0.0f, 1.0f, "%.2f")) {
                 edit([s, restitution](Scene& sc) { sc.world.setRestitution(s, restitution); });
+            }
+            if (ImGui::SliderFloat("Rolling resistance", &rolling, 0.0f, 0.5f, "%.3f")) {
+                edit([s, rolling](Scene& sc) { sc.world.setRollingResistance(s, rolling); });
             }
             ImGui::PopID();
         }

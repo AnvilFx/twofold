@@ -172,6 +172,29 @@ TEST(bodies_settle_in_a_mesh_bowl) {
     }
 }
 
+TEST(cylinder_rolls_across_mesh_edges_without_catching) {
+    World w;
+    addMesh(w, grid(16, 1.0f));
+    BodyDesc bd;
+    bd.position = { -6, 0.3f, 0.1f };
+    bd.linearVelocity = { 2, 0, 0 };
+    bd.angularVelocity = { 0, 0, -2.0f / 0.3f };
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Cylinder{ 0.3f, 0.3f };
+    sd.friction = 0.5f;
+    w.addShape(b, sd);
+    float lowest = 1.0f, highest = 0.0f;
+    for (int f = 0; f < 180; ++f) {
+        w.step(kDt);
+        lowest = std::fmin(lowest, w.position(b).y);
+        highest = std::fmax(highest, w.position(b).y);
+    }
+    CHECK(lowest > 0.297f && highest < 0.303f);
+    CHECK(w.linearVelocity(b).x > 1.95f);
+    CHECK(std::fabs(w.linearVelocity(b).z) < 0.01f);
+}
+
 TEST(fast_ball_does_not_pass_through_a_mesh) {
     World w;
     addMesh(w, grid(2, 2.0f));

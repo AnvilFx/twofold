@@ -76,12 +76,12 @@ with locks. See [decision 1](decisions/0001-planar-bodies-are-locked-3d-bodies.m
 | --- | --- |
 | `Sphere` | A point with a radius |
 | `Box`, `Prism` | A polyhedron |
-| `Cylinder` | A 24-sided prism in 3D, an exact circle on the planar path |
+| `Cylinder` | A radius and a half height along local z |
 | `Hull` | A polyhedron from `computeHull` |
 | `HalfSpace` | Everything below the local xy plane. Static bodies only |
 | `Mesh` | A shared `TriangleMesh`. Static and kinematic bodies only |
 
-See [decision 5](decisions/0005-cylinders-are-prisms-in-3d.md) for why cylinders are prisms.
+See [decision 21](decisions/0021-cylinders-are-exact-in-3d.md) for how cylinders collide.
 
 A `TriangleMesh` merges vertices at the same position and drops triangles whose corners
 are nearly collinear. Its tree splits at the median of the triangle centers along their
@@ -165,8 +165,19 @@ See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
 - **Edge contacts** clip the face of B nearest the axis against the face of A, seen along
   the edge axis. An edge lying across a face rests on two points instead of one. When that
   clip is empty, the closest points of the two edges make a single contact.
-- **Spheres** against polyhedra, spheres and half-spaces have their own direct tests. So do
-  polyhedra against half-spaces.
+- **Spheres** against polyhedra, spheres, cylinders and half-spaces have their own direct
+  tests. So do polyhedra and cylinders against half-spaces.
+- **Cylinders** against polyhedra, cylinders and mesh triangles test a set of feature axes:
+  the polyhedron's face normals, the cylinder axes, and the crosses of edges and axes with
+  each other, turned radial where they are parallel. Two GJK directions join them, one
+  between the shapes and one between their cores, each cylinder shrunk by a quarter of its
+  smaller dimension and rounded by the same amount. A GJK direction is used only when it
+  beats every feature axis, which happens where a rim meets an edge or another rim. Each
+  side then offers a feature along the normal: a cap as 24 rim points, the line of the
+  side, a polyhedron face, or its one or two deepest vertices. A face clips the other
+  feature, and two lines touch at their closest points or along their overlap. A spinning
+  cylinder also offers the side lines next to the one touching, so the next one to land
+  is already in the manifold.
 - **Meshes** collide with each triangle whose bounds reach the other shape, in the mesh's
   frame. See below.
 
@@ -270,6 +281,14 @@ substep, so a heavy body landing on a light one would crush it into the floor. R
 bodies pay nothing for this. See
 [decision 11](decisions/0011-impact-contacts-get-a-second-pass.md). The default mixing is the geometric mean for friction and the maximum for
 restitution. Both can be replaced with `setFrictionMix` and `setRestitutionMix`.
+
+Rolling resistance is an angular impulse against the relative spin of the two bodies,
+limited by the mixed coefficient times the rolling radius times the total normal impulse.
+The rolling radius is the mean height of the dynamic body's center of mass above the
+contact points. The impulse is solved in one step along the current spin direction and
+the total is clamped, so a planar body only takes impulse about the axes it can turn on.
+It resists spin about the normal too. The mix is the maximum, and a coefficient of zero
+skips it. See [decision 22](decisions/0022-rolling-resistance-follows-the-spin.md).
 
 A direction the bodies cannot move in, such as the depth axis of a planar body, has an
 effective mass of zero. Rounding can leave such a direction with a tiny nonzero response,
@@ -414,8 +433,6 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
 - Meshes can't be dynamic. Use hulls or several convex shapes for a moving concave body.
 - A light chain holding a much heavier body stretches. Twelve links holding a ball about
   200 times heavier than each link rest 0.17 m longer in total.
-- A planar body on a half-space goes through the 3D path. It behaves correctly but does
-  not get the exact circles of the planar path.
 - Contacts are springs, so a stack sags under its own weight. A three box tower rests
   with 7 mm of overlap between the bottom two boxes. More substeps or a higher
   `contactHertz` make it stiffer.

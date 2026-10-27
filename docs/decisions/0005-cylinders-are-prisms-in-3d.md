@@ -2,7 +2,7 @@
 
 Date: 2026-10-26
 
-Status: Accepted
+Status: Replaced by [decision 21](0021-cylinders-are-exact-in-3d.md)
 
 ## Context
 

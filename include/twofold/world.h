@@ -93,6 +93,9 @@ struct ShapeDesc {
     float density = 1.0f;
     float friction = 0.5f;
     float restitution = 0.0f;
+    // Torque against one body turning on another, as a fraction of the normal force times the height of the
+    // turning body's center of mass above the contact.
+    float rollingResistance = 0.0f;
     // Two shapes collide when each one's category overlaps the other's mask.
     uint32_t category = 1;
     uint32_t mask = 0xffffffffu;
@@ -222,6 +225,9 @@ struct ContactInfo {
     Vec3 normal;
     float friction = 0.0f;
     float restitution = 0.0f;
+    float rollingResistance = 0.0f;
+    // Angular impulse on body B. Body A takes the opposite.
+    Vec3 rollingImpulse;
     int pointCount = 0;
     Vec3 points[4];
     float separations[4] = {};
@@ -305,10 +311,12 @@ public:
     Transform localTransform(ShapeId shape) const;
     float friction(ShapeId shape) const;
     float restitution(ShapeId shape) const;
+    float rollingResistance(ShapeId shape) const;
     Aabb bounds(ShapeId shape) const;
     void setGeometry(ShapeId shape, const Geometry& geometry);
     void setFriction(ShapeId shape, float friction);
     void setRestitution(ShapeId shape, float restitution);
+    void setRollingResistance(ShapeId shape, float rollingResistance);
     void setFilter(ShapeId shape, uint32_t category, uint32_t mask);
 
     Transform transform(BodyId body) const;

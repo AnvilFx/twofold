@@ -18,7 +18,8 @@ the plane normal.
 - Bodies made of several shapes, with mass and inertia computed from density
 - Static, kinematic and dynamic bodies
 - Per-axis translation and rotation locks in any frame, including planar bodies
-- Substepped soft contact solver with friction, restitution and warm starting
+- Substepped soft contact solver with friction, rolling resistance, restitution and warm
+  starting
 - Speculative contacts for fast bodies
 - Continuous collision for bodies knocked or pushed through thin shapes within a single
   step, against static, kinematic and dynamic bodies
@@ -30,8 +31,7 @@ the plane normal.
 - Per-step timings and counts, contact details and sleep islands for debugging tools
 
 Not yet implemented: dynamic meshes, shape casts and overlap queries, and contact
-callbacks. Cylinders collide as 24-sided prisms, except against a
-planar body in the same plane, where they are exact circles.
+callbacks.
 
 ## Building
 

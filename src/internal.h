@@ -80,7 +80,7 @@ Polyhedron makePrism(const std::vector<Vec2>& polygon, float zMin, float zMax);
 Polyhedron makeBox(const Vec3& halfExtents);
 MassProperties polyhedronMass(const Polyhedron& poly, float density);
 
-enum class ShapeKind : uint8_t { Sphere, Convex, HalfSpace, Mesh };
+enum class ShapeKind : uint8_t { Sphere, Convex, HalfSpace, Mesh, Cylinder };
 
 struct Shape {
     uint32_t generation = 0;
@@ -91,12 +91,15 @@ struct Shape {
     float density = 1.0f;
     float friction = 0.5f;
     float restitution = 0.0f;
+    float rollingResistance = 0.0f;
     uint32_t category = 1;
     uint32_t mask = 0xffffffffu;
     void* userData = nullptr;
 
     ShapeKind kind = ShapeKind::Convex;
+    // A cylinder runs along local z.
     float radius = 0.0f;
+    float halfHeight = 0.0f;
     Polyhedron poly;
     // Distance from the shape origin to its farthest point.
     float extent = 0.0f;
@@ -112,17 +115,25 @@ struct Shape {
 void buildShape(Shape& shape);
 MassProperties shapeMass(const Shape& shape);
 void shapeBounds(const Shape& shape, const Transform& xf, Vec3& lo, Vec3& hi);
+// Half the size of the bounds of a cylinder along each axis.
+Vec3 cylinderReach(const Vec3& axis, float radius, float halfHeight);
+// The point of a cylinder along local z farthest along d.
+Vec3 cylinderSupport(float radius, float halfHeight, const Vec3& d);
 // Null unless the shape is a mesh with at least one triangle.
 const TriangleMesh::Data* meshOf(const Shape& shape);
 // Bounds in the mesh's frame of the box lo, hi in the world.
 void boundsInMesh(const Transform& xm, const Vec3& lo, const Vec3& hi, Vec3& meshLo, Vec3& meshHi);
 
-// Points in shape space, grown by radius. A half-space has no points.
+// Points in shape space, grown by radius. A half-space has no points, and neither has a cylinder along z
+// with a rim radius.
 struct Convex {
     const Vec3* points = nullptr;
     int count = 0;
     float radius = 0.0f;
     bool halfSpace = false;
+    bool cylinder = false;
+    float rim = 0.0f;
+    float halfHeight = 0.0f;
 };
 
 Convex convexOf(const Shape& shape);
@@ -269,7 +280,8 @@ bool collidePlanar(const Shape& a, const Transform& xa, const Shape& b, const Tr
 void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, const Transform& xo, float margin,
                  const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out);
 
-void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m);
+// The first point kept is the first one within tie of the deepest.
+void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m, float tie = 0.0f);
 
 struct ContactPoint {
     // Where the point touches each shape, in its body's frame.
@@ -309,6 +321,11 @@ struct Contact {
     Vec3 tangent1, tangent2;
     float friction = 0.0f;
     float restitution = 0.0f;
+    float rollingResistance = 0.0f;
+    // Mean height of the turning body's center of mass above the contact points.
+    float rollingRadius = 0.0f;
+    // Angular impulse on body B.
+    Vec3 rollingImpulse;
     int count = 0;
     ContactPoint points[4];
     // The normal and the pose of body B in body A's frame when the points were collided.
