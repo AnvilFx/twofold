@@ -195,6 +195,12 @@ Friction is a two-axis cone, clamped by the point's normal impulse times the mix
 friction. The default mixing is the geometric mean for friction and the maximum for
 restitution. Both can be replaced with `setFrictionMix` and `setRestitutionMix`.
 
+A direction the bodies cannot move in, such as the depth axis of a planar body, has an
+effective mass of zero. Rounding can leave such a direction with a tiny nonzero response,
+which would turn into a huge effective mass. Any response smaller than a millionth of the
+two inverse masses is treated as zero. See
+[decision 9](decisions/0009-locked-directions-have-no-effective-mass.md).
+
 ### Mid-step refresh
 
 Contact points come from the start of the step. A body spinning fast carries those points

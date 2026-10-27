@@ -321,7 +321,7 @@ TEST(traced_bodies_tumble_onto_ground_without_sinking) {
         bd.angularVelocity = { 0, 0, (float)(trial % 3) - 1.0f };
         bd.locks = LockPlanar;
         const BodyId b = addPieces(w, bd, pieces, { 50, 50 }, 0.02f);
-        for (int i = 0; i < 480; ++i) {
+        for (int i = 0; i < 900; ++i) {
             w.step(kDt);
             deepest = std::fmax(deepest, deepestContact(w));
         }

@@ -444,6 +444,22 @@ TEST(planar_thin_layers_do_not_separate_in_depth) {
     CHECK_NEAR(w.position(b).z, 0.001f, 1e-6f);
 }
 
+TEST(planar_box_slides_to_rest_on_half_space) {
+    World w;
+    addGround(w);
+    BodyDesc bd;
+    bd.locks = LockPlanar;
+    bd.position = { 0, 0.5f, 0 };
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Box{ { 0.5f, 0.5f, 0.1f } };
+    w.addShape(b, sd);
+    w.setLinearVelocity(b, { 3, 0, 0 });
+    run(w, 2.0f);
+    CHECK(w.position(b).x < 1.0f);
+    CHECK(std::fabs(w.linearVelocity(b).x) < 0.01f);
+}
+
 // A spinning disc set down settles into rolling at a third of its spin.
 TEST(planar_disc_rolls_on_box) {
     World w;

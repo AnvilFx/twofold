@@ -31,6 +31,19 @@ hull piles then never go to sleep, so that's out. There is still a case where tw
 cylinders get trapped under a pile, 150 to 220 mm deep for 8 to 12 frames. It happens
 without the refresh too. Not fixed.
 
+Chasing Cutouts pieces that leave the bowl and glide 100+ m across the ground.
+A planar box sliding at 3 m/s on a half-space went 27 m. On a box floor, 0.84 m. Planar
+bodies on a half-space go through the 3D path, and the half-space normal has rounding in
+z from the rotation that made it. The friction tangent then has a tiny free component,
+so its effective mass is enormous, and that one direction eats the whole friction cone.
+Directions with a response under a millionth of the inverse masses now get no effective
+mass. Same box now stops at 0.83 m.
+
+One test broke from that: a traced ring with a bar through it no longer settled in 480
+frames. With real friction it rolls back and forth between the bar ends, same as it does
+on a box floor, and sleeps by frame 671. Gave it 900 frames. In Cutouts, bodies still
+awake after a minute went from 34 (gliding) to 6 (swinging on a peg).
+
 ## 2026-10-27 02:33
 
 Viewer came up tiny on a high DPI monitor. It now scales with the monitor it opens on.
