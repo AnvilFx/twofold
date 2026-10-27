@@ -20,16 +20,18 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `include/twofold/world.h` | The public API: `World`, descriptors, geometry types, queries |
 | `include/twofold/math.h` | `Vec2`, `Vec3`, `Quat`, `Mat3`, `Transform` |
 | `include/twofold/hull.h` | `computeHull` |
+| `include/twofold/mesh.h` | `TriangleMesh` |
 | `include/twofold/outline.h` | Alpha tracing, contour simplification, convex decomposition |
 | `src/internal.h` | Internal types shared by the source files |
 | `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping, continuous collision |
 | `src/tree.h`, `src/tree.cpp` | The dynamic AABB tree behind the broadphase and queries |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
 | `src/joint.cpp` | Joint warm starting, the joint solve and the settle pass |
-| `src/collide3d.cpp` | SAT for polyhedra, sphere and half-space pairs, manifold reduction |
+| `src/collide3d.cpp` | SAT for polyhedra, sphere, half-space and mesh pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
 | `src/distance.cpp` | GJK distance, sweeps, time of impact |
 | `src/hull.cpp` | Quickhull with a vertex limit |
+| `src/mesh.cpp` | Mesh building, edge flags, the triangle tree, mesh rays |
 | `src/outline.cpp` | Marching squares, simplification, ear clipping, Hertel-Mehlhorn |
 | `src/shape.cpp`, `src/polyhedron.cpp` | Shape building, mass properties, bounds |
 | `src/query.cpp` | Ray casts |
@@ -77,8 +79,17 @@ with locks. See [decision 1](decisions/0001-planar-bodies-are-locked-3d-bodies.m
 | `Cylinder` | A 24-sided prism in 3D, an exact circle on the planar path |
 | `Hull` | A polyhedron from `computeHull` |
 | `HalfSpace` | Everything below the local xy plane. Static bodies only |
+| `Mesh` | A shared `TriangleMesh`. Static and kinematic bodies only |
 
 See [decision 5](decisions/0005-cylinders-are-prisms-in-3d.md) for why cylinders are prisms.
+
+A `TriangleMesh` merges vertices at the same position and drops triangles whose corners
+are nearly collinear. Its tree splits at the median of the triangle centers along their
+widest axis, down to four triangles a leaf. Each triangle keeps its normal and six edge
+flags, one per edge and side. An edge has a normal of its own on a side when the neighbor
+folds away from that side by more than a sine of 0.087, and on both sides when it is open
+or shared by more than two triangles. Meshes have no mass and don't collide with each
+other or with half-spaces.
 
 Every polyhedron keeps vertices, face loops, face planes, its bounds, and an edge list with
 the two faces on each edge. Each edge also stores its length and its arc on the Gauss map,
@@ -156,6 +167,8 @@ See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
   clip is empty, the closest points of the two edges make a single contact.
 - **Spheres** against polyhedra, spheres and half-spaces have their own direct tests. So do
   polyhedra against half-spaces.
+- **Meshes** collide with each triangle whose bounds reach the other shape, in the mesh's
+  frame. See below.
 
 Every pair produces candidate points with a separation. Speculative points, up to the
 margin apart, are kept so the solver can stop an approach before it turns into overlap.
@@ -170,6 +183,24 @@ outside that triangle. Free slots take the deepest of the rest.
 
 Ranking on predicted separation rather than current separation matters for tumbling
 bodies. The vertex about to land is kept even though it is not touching yet.
+
+### Meshes
+
+A triangle is a polyhedron with two faces, front and back, so the face queries, face
+contacts and edge contacts above apply to it unchanged. Its edge query is its own: the arc
+of a triangle edge on the Gauss map is the half circle from the front normal through the
+edge's outward direction to the back normal. A sphere takes the closest point on the
+triangle.
+
+When a contact's normal is off the triangle's normal, the triangle feature closest to its
+deepest point is found. If that edge or corner has no normal of its own on the side the
+body is on, the contact is made again as a face contact on that side. If any of its points
+is deeper than SAT found the shapes to overlap, the contact belongs to a neighbor and is
+dropped. A sphere's contact on such a feature is dropped unless the sphere's center lies
+over the face. See [decision 19](decisions/0019-meshes-collide-one-triangle-at-a-time.md).
+
+Contacts from triangles whose normals are within a cosine of 0.996 merge under the normal
+of the deepest one and are reduced to four points. Each group becomes its own contact.
 
 ### The planar path
 
@@ -203,6 +234,11 @@ A pair whose bodies moved less than `contactReuseDistance` and turned less than
 narrowphase. It keeps its points and impulses, measures each separation again from where
 the point sits on each body, and turns its normal with body A. See
 [decision 15](decisions/0015-pairs-that-barely-moved-keep-their-contacts.md).
+
+A mesh pair can have several contacts, ordered by a part index after the key. They are
+reused only together, when all of them still fit. A new contact takes its impulses from
+the old contact of the pair with the closest normal. See
+[decision 20](decisions/0020-a-mesh-pair-has-a-contact-per-facing.md).
 
 ## Solver
 
@@ -251,7 +287,9 @@ the substeps.
 Before that, every active contact is rebased. Its anchors become the bodies' current lever
 arms, its stored separation absorbs the distance already moved, and `dp`, `dq` and the
 base orientation of every body reset. New points then take impulses from old points the
-same way as after the narrowphase, and the restitution data of the nearest old point.
+same way as after the narrowphase, and the restitution data of the nearest old point. A
+mesh pair is collided once, and each of its contacts takes the new group whose normal is
+closest to its own.
 
 See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md).
 
@@ -307,7 +345,10 @@ Fast shapes are swept against everything near their path in two stages:
    back to that time on its sweep.
 
 Dynamic bodies that hit each other move back together, to the earliest time in the group,
-so none is left inside another. Time is lost for a moved body. The next step carries on
+so none is left inside another. Against a mesh, the full shape is swept against each
+triangle under the path. The triangles are found in the mesh's frame at its poses at both
+ends of the step.
+Meshes are never fast themselves. Time is lost for a moved body. The next step carries on
 with the velocity the solve gave it.
 
 For a planar body, the inner extent ignores the faces facing along the plane normal. A
@@ -369,7 +410,8 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
 
 ## Known limits
 
-- No triangle meshes, shape casts, overlap queries or contact callbacks yet.
+- No shape casts, overlap queries or contact callbacks yet.
+- Meshes can't be dynamic. Use hulls or several convex shapes for a moving concave body.
 - A light chain holding a much heavier body stretches. Twelve links holding a ball about
   200 times heavier than each link rest 0.17 m longer in total.
 - A planar body on a half-space goes through the 3D path. It behaves correctly but does

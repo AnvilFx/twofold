@@ -449,6 +449,141 @@ void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& 
     reduceManifold(pts, n, band, m);
 }
 
+// Triangle manifolds whose normals are this close merge into one.
+constexpr float kSameNormal = 0.996f;
+
+// A triangle as a polyhedron with a front and a back face, so the face queries and clipping above apply.
+struct TriangleFrame {
+    Polyhedron poly;
+
+    TriangleFrame() {
+        poly.vertices.resize(3);
+        poly.indices = { 0, 1, 2, 0, 2, 1 };
+        poly.faces = { { 0, 3 }, { 3, 3 } };
+        poly.normals.resize(2);
+        poly.offsets.resize(2);
+        poly.edges.resize(3);
+        for (int k = 0; k < 3; ++k) {
+            poly.edges[k].v0 = k;
+            poly.edges[k].v1 = (k + 1) % 3;
+            poly.edges[k].f0 = 0;
+            poly.edges[k].f1 = 1;
+        }
+    }
+
+    void set(const Vec3 c[3], const Vec3& n) {
+        for (int k = 0; k < 3; ++k) {
+            poly.vertices[k] = c[k];
+            poly.edges[k].length = length(c[(k + 1) % 3] - c[k]);
+        }
+        poly.normals[0] = n;
+        poly.normals[1] = -n;
+        poly.offsets[0] = dot(n, c[0]);
+        poly.offsets[1] = -poly.offsets[0];
+        poly.centroid = (c[0] + c[1] + c[2]) * (1.0f / 3.0f);
+        poly.lo = minVec(minVec(c[0], c[1]), c[2]);
+        poly.hi = maxVec(maxVec(c[0], c[1]), c[2]);
+    }
+};
+
+// Edge queries against a triangle. A triangle edge's arc on the Gauss map is the half circle from the
+// front normal through the edge's outward direction to the back normal.
+EdgeQuery queryTriangleEdges(const FramePoly& a, const FramePoly& b, float reach, std::vector<int>& nearB) {
+    EdgeQuery q;
+    const Vec3 grow{ reach, reach, reach };
+    edgesInBox(b, maxVec(a.lo, b.lo) - grow, minVec(a.hi, b.hi) + grow, nearB);
+    const std::vector<Polyhedron::Edge>& eb = b.src->edges;
+    q.pruned = nearB.size() < eb.size();
+    const Vec3 n = a.n[0];
+    for (int k = 0; k < 3; ++k) {
+        const Vec3 pa = a.v[k];
+        const Vec3 e = a.v[(k + 1) % 3] - pa;
+        const Vec3 out = cross(e, n);
+        const float lengthA = a.src->edges[k].length;
+        for (int j : nearB) {
+            const Vec3 u = b.n[eb[j].f0], v = b.n[eb[j].f1];
+            const float du = dot(u, e), dv = dot(v, e);
+            if (du * dv >= 0.0f) { continue; }
+            // Where b's arc crosses the plane of a's arc. The pair forms a face when a's normal there is
+            // the opposite direction.
+            const Vec3 p = (u * dv - v * du) * (dv > 0.0f ? 1.0f : -1.0f);
+            if (dot(p, out) >= 0.0f) { continue; }
+
+            const Vec3 pb = b.v[eb[j].v0];
+            Vec3 axis = cross(e, b.v[eb[j].v1] - pb);
+            const float len = length(axis);
+            if (len < kParallelEdges * lengthA * eb[j].length) { continue; }
+            axis = axis / len;
+            if (dot(axis, p) > 0.0f) { axis = -axis; }
+            const float s = dot(axis, pb - pa);
+            if (s > q.separation) {
+                q.separation = s;
+                q.a = k;
+                q.b = j;
+                q.axis = axis;
+            }
+        }
+    }
+    return q;
+}
+
+// The point of the triangle closest to p, and its feature: corner k is k, edge k is 3 + k, the face is 6.
+Vec3 closestOnTriangle(const Vec3 c[3], const Vec3& p, int& feature) {
+    const Vec3 ab = c[1] - c[0], ac = c[2] - c[0], ap = p - c[0];
+    const float d1 = dot(ab, ap), d2 = dot(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f) {
+        feature = 0;
+        return c[0];
+    }
+    const Vec3 bp = p - c[1];
+    const float d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3) {
+        feature = 1;
+        return c[1];
+    }
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        feature = 3;
+        return c[0] + ab * (d1 / (d1 - d3));
+    }
+    const Vec3 cp = p - c[2];
+    const float d5 = dot(ab, cp), d6 = dot(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6) {
+        feature = 2;
+        return c[2];
+    }
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        feature = 5;
+        return c[0] + ac * (d2 / (d2 - d6));
+    }
+    const float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && d4 - d3 >= 0.0f && d5 - d6 >= 0.0f) {
+        feature = 4;
+        return c[1] + (c[2] - c[1]) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    feature = 6;
+    const float denom = 1.0f / (va + vb + vc);
+    return c[0] + ab * (vb * denom) + ac * (vc * denom);
+}
+
+// Whether a contact on the feature may keep a normal other than the face's, seen from side 0 (front) or 1.
+bool ownNormal(uint8_t edges, int feature, int side) {
+    const int shift = 3 * side;
+    if (feature >= 3 && feature < 6) { return (edges >> (shift + feature - 3)) & 1; }
+    if (feature < 3) { return ((edges >> (shift + feature)) & 1) || ((edges >> (shift + (feature + 2) % 3)) & 1); }
+    return true;
+}
+
+struct MeshBuffers {
+    TriangleFrame tri;
+    FrameStore frame;
+    std::vector<int> near;
+    ClipBuffers clip;
+    std::vector<Manifold> found;
+    std::vector<std::vector<ManifoldPoint>> groups;
+};
+
 }
 
 // Ranks points by predicted separation. Spread is chosen among points within band of the deepest,
@@ -526,11 +661,145 @@ void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float b
     }
 }
 
+void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, const Transform& xo, float margin,
+                 const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out) {
+    out.clear();
+    const TriangleMesh::Data* d = meshOf(mesh);
+    if (!d || (other.kind != ShapeKind::Sphere && other.kind != ShapeKind::Convex)) { return; }
+    thread_local MeshBuffers buf;
+    buf.found.clear();
+    const Transform rel{ xm.q.unrotate(xo.p - xm.p), xm.q.conjugate() * xo.q };
+    const float absTol = 0.5f * tol.linearSlop;
+
+    if (other.kind == ShapeKind::Sphere) {
+        const Vec3 center = rel.p;
+        const float r = other.radius;
+        const Vec3 reach{ r + margin, r + margin, r + margin };
+        d->query(center - reach, center + reach, [&](int t) {
+            Vec3 c[3];
+            d->corners(t, c);
+            const Vec3 n = d->normals[t];
+            int feature;
+            const Vec3 q = closestOnTriangle(c, center, feature);
+            const float h = dot(n, center - c[0]);
+            const int side = h >= 0.0f ? 0 : 1;
+            const float dist = length(center - q);
+            Vec3 normal, surface;
+            float sep;
+            const bool own = feature != 6 && dist > 0.0f && ownNormal(d->edges[t], feature, side);
+            if (!own && dist - std::fabs(h) > tol.linearSlop) { return; }
+            if (!own) {
+                normal = side == 0 ? n : -n;
+                sep = std::fabs(h) - r;
+                surface = center - normal * std::fabs(h);
+            } else {
+                normal = (center - q) / dist;
+                sep = dist - r;
+                surface = q;
+            }
+            if (sep > margin) { return; }
+            Manifold m;
+            m.normal = xm.q.rotate(normal);
+            const Vec3 w = xm.apply((surface + center - normal * r) * 0.5f);
+            m.points[0] = { w, sep, motion.predict(w, m.normal, sep) };
+            m.count = 1;
+            buf.found.push_back(m);
+        });
+    } else {
+        const FramePoly b = otherFrame(other.poly, rel, buf.frame);
+        const Convex convexB = convexOf(other);
+        const Vec3 grow{ margin, margin, margin };
+        d->query(b.lo - grow, b.hi + grow, [&](int t) {
+            Vec3 c[3];
+            d->corners(t, c);
+            const Vec3 n = d->normals[t];
+            buf.tri.set(c, n);
+            const FramePoly a = ownFrame(buf.tri.poly);
+
+            const FaceQuery fa = queryFaces(a, b, margin);
+            if (fa.separation > margin) { return; }
+            const FaceQuery fb = queryFaces(b, a, margin);
+            if (fb.separation > margin) { return; }
+            const float reach = std::fmax(margin, -std::fmax(fa.separation, fb.separation));
+            const EdgeQuery eq = queryTriangleEdges(a, b, reach, buf.near);
+            if (eq.separation > margin) { return; }
+            if (eq.pruned) {
+                const Convex triangle{ buf.tri.poly.vertices.data(), 3, 0.0f, false };
+                if (distance(triangle, xm, convexB, xo).distance > margin) { return; }
+            }
+
+            Manifold m;
+            if (eq.a >= 0 && eq.separation > 0.9f * std::fmax(fa.separation, fb.separation) + absTol) {
+                edgeContact(a, b, eq, xm, margin, tol.linearSlop, motion, buf.clip, m);
+            } else if (fb.separation > 0.98f * fa.separation + absTol) {
+                faceContact(b, fb.index, a, true, xm, margin, tol.linearSlop, motion.swapped(), buf.clip, m);
+            } else {
+                faceContact(a, fa.index, b, false, xm, margin, tol.linearSlop, motion, buf.clip, m);
+            }
+            if (m.count == 0) { return; }
+
+            // Off the face normal on an edge or corner that has no normal of its own, the neighbor takes
+            // that direction, so this triangle only pushes along its face. Where the face is deeper than
+            // the shapes overlap, the contact belongs to the neighbor.
+            if (std::fabs(dot(xm.q.unrotate(m.normal), n)) < 0.9999f) {
+                int deepest = 0;
+                for (int i = 1; i < m.count; ++i) {
+                    if (m.points[i].separation < m.points[deepest].separation) { deepest = i; }
+                }
+                int feature;
+                closestOnTriangle(c, xm.applyInverse(m.points[deepest].position), feature);
+                if (!ownNormal(d->edges[t], feature, fa.index)) {
+                    const float floor = std::fmax(std::fmax(fa.separation, fb.separation), eq.separation) - tol.linearSlop;
+                    m.count = 0;
+                    faceContact(a, fa.index, b, false, xm, margin, tol.linearSlop, motion, buf.clip, m);
+                    for (int k = 0; k < m.count; ++k) {
+                        if (m.points[k].separation < floor) { return; }
+                    }
+                    if (m.count == 0) { return; }
+                }
+            }
+            for (int k = 0; k < m.count; ++k) {
+                ManifoldPoint& p = m.points[k];
+                p.predicted = motion.predict(p.position, m.normal, p.separation);
+            }
+            buf.found.push_back(m);
+        });
+    }
+
+    // Triangles facing the same way share one manifold, under the normal of the deepest of them.
+    if (buf.groups.size() < buf.found.size()) { buf.groups.resize(buf.found.size()); }
+    std::vector<int> owner(buf.found.size(), -1);
+    int groupCount = 0;
+    for (size_t i = 0; i < buf.found.size(); ++i) {
+        if (owner[i] >= 0) { continue; }
+        std::vector<ManifoldPoint>& pts = buf.groups[groupCount];
+        pts.clear();
+        size_t lead = i;
+        float deepest = FLT_MAX;
+        for (size_t j = i; j < buf.found.size(); ++j) {
+            if (owner[j] >= 0 || dot(buf.found[j].normal, buf.found[i].normal) < kSameNormal) { continue; }
+            owner[j] = groupCount;
+            for (int k = 0; k < buf.found[j].count; ++k) {
+                pts.push_back(buf.found[j].points[k]);
+                if (buf.found[j].points[k].separation < deepest) {
+                    deepest = buf.found[j].points[k].separation;
+                    lead = j;
+                }
+            }
+        }
+        Manifold m;
+        reduceManifold(pts, buf.found[lead].normal, tol.linearSlop, m);
+        out.push_back(m);
+        ++groupCount;
+    }
+}
+
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
              float margin, const Tolerances& tol, const Motion& motion, Manifold& m) {
     m.count = 0;
     const ShapeKind ka = a.kind, kb = b.kind;
     if (ka == ShapeKind::HalfSpace && kb == ShapeKind::HalfSpace) { return; }
+    if (ka == ShapeKind::Mesh || kb == ShapeKind::Mesh) { return; }
 
     if (ka == ShapeKind::HalfSpace) {
         collideHalfSpace(xa, b, xb, margin, tol.linearSlop, motion, m);

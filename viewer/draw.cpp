@@ -201,6 +201,39 @@ void drawHull(const twofold::Transform& xf, const HullMesh& hull, const Color* f
     rlEnd();
 }
 
+void drawMesh(const twofold::Transform& xf, const TriangleMesh& mesh, const Color* fill, Color edge) {
+    const std::vector<Vec3>& verts = mesh.vertices();
+    const std::vector<uint32_t>& idx = mesh.indices();
+    std::vector<Vec3> p(verts.size());
+    for (size_t i = 0; i < verts.size(); ++i) { p[i] = xf.apply(verts[i]); }
+    const size_t count = idx.size() / 3;
+    constexpr size_t kChunk = 512;
+    for (size_t first = 0; first < count; first += kChunk) {
+        const size_t last = std::min(count, first + kChunk);
+        if (fill) {
+            rlCheckRenderBatchLimit((int)(last - first) * 6);
+            rlBegin(RL_TRIANGLES);
+            for (size_t t = first; t < last; ++t) {
+                const Vec3 a = p[idx[3 * t]], b = p[idx[3 * t + 1]], c = p[idx[3 * t + 2]];
+                const Vec3 n = normalize(cross(b - a, c - a));
+                triangle(a, b, c, shade(*fill, n));
+                triangle(a, c, b, shade(*fill, -n));
+            }
+            rlEnd();
+        }
+        rlCheckRenderBatchLimit((int)(last - first) * 6);
+        rlBegin(RL_LINES);
+        color(edge);
+        for (size_t t = first; t < last; ++t) {
+            for (int k = 0; k < 3; ++k) {
+                vertex(p[idx[3 * t + k]]);
+                vertex(p[idx[3 * t + (k + 1) % 3]]);
+            }
+        }
+        rlEnd();
+    }
+}
+
 void drawGeometry(const twofold::Transform& xf, const Visual& v, const Color* fill, Color edge, const Vec3& focus) {
     const Geometry& g = v.geometry;
     if (const Box* b = std::get_if<Box>(&g)) {
@@ -214,6 +247,8 @@ void drawGeometry(const twofold::Transform& xf, const Visual& v, const Color* fi
         drawPrism(xf, pr->polygon, pr->zMin, pr->zMax, fill, edge, true);
     } else if (std::holds_alternative<Hull>(g)) {
         drawHull(xf, v.hull, fill, edge);
+    } else if (const twofold::Mesh* m = std::get_if<twofold::Mesh>(&g)) {
+        if (m->mesh) { drawMesh(xf, *m->mesh, fill, edge); }
     } else {
         drawHalfSpace(xf, focus, fill != nullptr);
     }

@@ -22,6 +22,8 @@ is tested by AnvilFx before it ships.
 - Convex hulls of point clouds, with a vertex limit
 - Outlines traced from alpha images and cut into convex pieces, for exact 2D shapes with
   holes and concave edges
+- Two-sided triangle meshes for static and kinematic bodies, with no catching on the
+  edges between triangles
 - Bodies made of several shapes, with mass and inertia computed from density
 - Static, kinematic and dynamic bodies
 - Per-axis translation and rotation locks in any frame, including planar bodies
@@ -36,7 +38,7 @@ is tested by AnvilFx before it ships.
 - Deterministic single-threaded stepping, and world copies that step identically
 - Per-step timings and counts, contact details and sleep islands for debugging tools
 
-Not yet implemented: triangle meshes, shape casts and overlap queries, and contact
+Not yet implemented: dynamic meshes, shape casts and overlap queries, and contact
 callbacks. Cylinders collide as 24-sided prisms, except against a
 planar body in the same plane, where they are exact circles.
 
@@ -138,6 +140,25 @@ Set `BodyDesc::locks` to `LockPlanar` to keep a body in the xy plane of its
 frame. Boxes, prisms and cylinders that extrude along the plane normal use the 2D
 path against each other. Any other pair, such as a planar box against a free sphere,
 uses the 3D path.
+
+## Meshes
+
+Build a `TriangleMesh` once from vertices and three indices per triangle, then share it
+between as many shapes as you like. Winding doesn't matter, since both sides collide.
+
+```cpp
+auto terrain = std::make_shared<TriangleMesh>(vertices, indices);
+
+BodyDesc floorDesc;
+floorDesc.type = MotionType::Static;
+BodyId floor = world.createBody(floorDesc);
+ShapeDesc floorShape;
+floorShape.geometry = Mesh{ terrain };
+world.addShape(floor, floorShape);
+```
+
+Meshes go on static and kinematic bodies only. A kinematic mesh moved with
+`setKinematicTarget` carries what rests on it.
 
 ## Joints
 

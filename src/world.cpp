@@ -328,17 +328,53 @@ struct World::Impl {
         return (length(b.v - a.v) + length(a.w) * bodyExtent(a) + length(b.w) * bodyExtent(b)) * dt;
     }
 
-    void collidePair(const Shape& sa, const Shape& sb, float dt, Manifold& m) const {
+    // One manifold, or one for each way the triangles of a mesh face.
+    void collidePair(const Shape& sa, const Shape& sb, float dt, std::vector<Manifold>& out) const {
         const Body& ba = bodies[sa.body];
         const Body& bb = bodies[sb.body];
         const Transform xa = ba.xf * sa.local;
         const Transform xb = bb.xf * sb.local;
         const float margin = tol.speculative + relativeTravel(ba, bb, dt);
+        const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt };
+        if (sa.kind == ShapeKind::Mesh) {
+            collideMesh(sa, xa, sb, xb, margin, tol, mo, out);
+            return;
+        }
+        if (sb.kind == ShapeKind::Mesh) {
+            collideMesh(sb, xb, sa, xa, margin, tol, mo.swapped(), out);
+            for (Manifold& m : out) { m.normal = -m.normal; }
+            return;
+        }
+        out.clear();
+        Manifold m;
         Vec3 n;
         if (!usePlanar(ba, bb, n) || !collidePlanar(sa, xa, sb, xb, n, margin, tol, m)) {
-            const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt };
             collide(sa, xa, sb, xb, margin, tol, mo, m);
         }
+        if (m.count > 0) { out.push_back(m); }
+    }
+
+    // The old contact of a pair whose normal is closest to n.
+    static const Contact* closestNormal(const Contact* first, const Contact* last, const Vec3& n) {
+        const Contact* best = nullptr;
+        for (const Contact* c = first; c != last; ++c) {
+            if (c->count > 0 && (!best || dot(c->normal, n) > dot(best->normal, n))) { best = c; }
+        }
+        return best;
+    }
+
+    bool meshTouches(const Shape& s, const Transform& xf, const Vec3& lo, const Vec3& hi) const {
+        const TriangleMesh::Data* m = meshOf(s);
+        if (!m) { return false; }
+        Vec3 meshLo, meshHi;
+        boundsInMesh(xf, lo, hi, meshLo, meshHi);
+        bool any = false;
+        m->query(meshLo, meshHi, [&](int t) {
+            Vec3 c[3];
+            m->corners(t, c);
+            any = any || boxesOverlap(minVec(minVec(c[0], c[1]), c[2]), maxVec(maxVec(c[0], c[1]), c[2]), meshLo, meshHi);
+        });
+        return any;
     }
 
     void removeContacts(uint32_t body, int shape) {
@@ -374,6 +410,7 @@ struct World::Impl {
                     const float reach = e.x * std::fabs(n.x) + e.y * std::fabs(n.y) + e.z * std::fabs(n.z);
                     if (dot(c - xa.p, n) > reach) { return; }
                 }
+                if (sa.kind == ShapeKind::Mesh && !meshTouches(sa, xa, blo, bhi)) { return; }
                 found.push_back(sb.body);
             });
             std::sort(found.begin(), found.end());
@@ -522,6 +559,7 @@ struct World::Impl {
 
         std::vector<Contact> next;
         std::vector<uint32_t> toWake;
+        std::vector<Manifold> found;
         const float matchSq = tol.speculative * tol.speculative;
         for (uint64_t key : candidates) {
             const uint32_t ia = (uint32_t)(key >> 32), ib = (uint32_t)(key & 0xffffffffu);
@@ -531,17 +569,27 @@ struct World::Impl {
             const Body& bb = bodies[sb.body];
             auto old = std::lower_bound(contacts.begin(), contacts.end(), key,
                                         [](const Contact& x, uint64_t k) { return x.key < k; });
-            const bool hasOld = old != contacts.end() && old->key == key;
+            auto oldEnd = old;
+            while (oldEnd != contacts.end() && oldEnd->key == key) { ++oldEnd; }
+            const bool hasOld = old != oldEnd;
+            bool keep = hasOld;
+            for (auto it = old; it != oldEnd && keep; ++it) { keep = stillFits(*it, ba, bb); }
 
-            Contact c;
-            if (hasOld && stillFits(*old, ba, bb)) {
-                c = *old;
-                measureAgain(ba, bb, c);
+            const size_t first = next.size();
+            if (keep) {
+                for (auto it = old; it != oldEnd; ++it) {
+                    next.push_back(*it);
+                    measureAgain(ba, bb, next.back());
+                }
             } else {
-                Manifold m;
-                collidePair(sa, sb, dt, m);
-                if (m.count == 0) { continue; }
+                collidePair(sa, sb, dt, found);
+                if (found.empty()) { continue; }
+            }
+            for (size_t mi = 0; !keep && mi < found.size(); ++mi) {
+                const Manifold& m = found[mi];
+                Contact c;
                 c.key = key;
+                c.part = (uint32_t)mi;
                 c.shapeA = ia;
                 c.shapeB = ib;
                 c.bodyA = sa.body;
@@ -561,14 +609,19 @@ struct World::Impl {
                     p.anchorB = m.points[i].position - bb.com;
                 }
                 remember(ba, bb, c);
-                if (hasOld) { carryImpulses(*old, c, matchSq); }
+                const Contact* olds = contacts.data();
+                if (const Contact* from = closestNormal(olds + (old - contacts.begin()), olds + (oldEnd - contacts.begin()), c.normal)) {
+                    carryImpulses(*from, c, matchSq);
+                }
+                next.push_back(c);
             }
-            c.friction = frictionMix({ sa.friction, ba.type }, { sb.friction, bb.type });
-            c.restitution = restitutionMix({ sa.restitution, ba.type }, { sb.restitution, bb.type });
+            for (size_t i = first; i < next.size(); ++i) {
+                next[i].friction = frictionMix({ sa.friction, ba.type }, { sb.friction, bb.type });
+                next[i].restitution = restitutionMix({ sa.restitution, ba.type }, { sb.restitution, bb.type });
+            }
 
             if (ba.type == MotionType::Dynamic && !ba.awake && movingAwake(bb)) { toWake.push_back(sa.body); }
             if (bb.type == MotionType::Dynamic && !bb.awake && movingAwake(ba)) { toWake.push_back(sb.body); }
-            next.push_back(c);
         }
 
         const size_t collided = next.size();
@@ -576,8 +629,9 @@ struct World::Impl {
             if (movingAwake(bodies[c.bodyA]) || movingAwake(bodies[c.bodyB])) { continue; }
             next.push_back(c);
         }
-        std::inplace_merge(next.begin(), next.begin() + (std::ptrdiff_t)collided, next.end(),
-                           [](const Contact& a, const Contact& b) { return a.key < b.key; });
+        std::inplace_merge(next.begin(), next.begin() + (std::ptrdiff_t)collided, next.end(), [](const Contact& a, const Contact& b) {
+            return a.key != b.key ? a.key < b.key : a.part < b.part;
+        });
         contacts.swap(next);
         wakeBodies(toWake);
         profile.manifolds = (int)contacts.size();
@@ -652,16 +706,30 @@ struct World::Impl {
         }
 
         const float matchSq = tol.speculative * tol.speculative;
-        for (uint32_t ci : fast) {
+        std::vector<Manifold> found;
+        std::vector<uint8_t> taken;
+        for (size_t fi = 0; fi < fast.size(); ++fi) {
+            const uint32_t ci = fast[fi];
             Contact& c = contacts[ci];
             const Body& a = bodies[c.bodyA];
             const Body& b = bodies[c.bodyB];
-            Manifold m;
-            collidePair(shapes[c.shapeA], shapes[c.shapeB], remaining, m);
-            if (m.count == 0) {
+            // The contacts of a pair sit next to each other. The pair is collided once, and each contact takes
+            // the new manifold whose normal is closest to its own.
+            if (fi == 0 || contacts[fast[fi - 1]].key != c.key) {
+                collidePair(shapes[c.shapeA], shapes[c.shapeB], remaining, found);
+                taken.assign(found.size(), 0);
+            }
+            int pick = -1;
+            for (size_t mi = 0; mi < found.size(); ++mi) {
+                if (taken[mi]) { continue; }
+                if (pick < 0 || dot(found[mi].normal, c.normal) > dot(found[(size_t)pick].normal, c.normal)) { pick = (int)mi; }
+            }
+            if (pick < 0) {
                 c.count = 0;
                 continue;
             }
+            taken[(size_t)pick] = 1;
+            const Manifold& m = found[(size_t)pick];
             const Contact old = c;
             c.reusable = false;
             c.normal = m.normal;
@@ -821,6 +889,7 @@ struct World::Impl {
             const float moved = length(b.com - b.com0);
             for (uint32_t si : b.shapes) {
                 const Shape& s = shapes[si];
+                if (s.kind == ShapeKind::Mesh) { continue; }
                 if (moved + sweeps[bi].angle * reach(s, b) > b.expectedTravel + 0.5f * innerExtent(s, b)) {
                     fast[si] = 1;
                     any = true;
@@ -877,18 +946,43 @@ struct World::Impl {
             const Shape& f = shapes[fi];
             const Shape& o = shapes[oi];
             const Body& bf = bodies[f.body];
-            const Convex other = convexOf(o);
-            const float otherReach = o.kind == ShapeKind::HalfSpace ? 0.0f : reach(o, bodies[o.body]);
+            const Body& bo = bodies[o.body];
             const Convex core{ &f.centroid, 1, 0.5f * innerExtent(f, bf), false };
             const float coreReach = length(f.local.apply(f.centroid) - bf.localCenter) + core.radius;
-            float coreT = 1.0f, t = 1.0f;
-            if (timeOfImpact(core, f.local, sweeps[f.body], coreReach, other, o.local, sweeps[o.body], otherReach, target,
-                             coreT) != Impact::Hit) {
+            auto sweep = [&](const Convex& other, float otherReach, float& t) {
+                float coreT = 1.0f;
+                if (timeOfImpact(core, f.local, sweeps[f.body], coreReach, other, o.local, sweeps[o.body], otherReach,
+                                 target, coreT) != Impact::Hit) {
+                    return false;
+                }
+                if (timeOfImpact(convexOf(f), f.local, sweeps[f.body], reach(f, bf), other, o.local, sweeps[o.body],
+                                 otherReach, target, t) != Impact::Hit) {
+                    t = coreT;
+                }
+                return true;
+            };
+            float t = 1.0f;
+            if (o.kind == ShapeKind::Mesh) {
+                const TriangleMesh::Data* m = meshOf(o);
+                if (!m) { continue; }
+                Vec3 lo0, hi0, lo1, hi1;
+                boundsInMesh(sweeps[o.body].at(0.0f) * o.local, sweptLo[fi], sweptHi[fi], lo0, hi0);
+                boundsInMesh(bo.xf * o.local, sweptLo[fi], sweptHi[fi], lo1, hi1);
+                bool hit = false;
+                m->query(minVec(lo0, lo1), maxVec(hi0, hi1), [&](int tri) {
+                    Vec3 c[3];
+                    m->corners(tri, c);
+                    float triReach = 0.0f;
+                    for (const Vec3& v : c) { triReach = std::fmax(triReach, length(o.local.apply(v) - bo.localCenter)); }
+                    float tt = 1.0f;
+                    if (sweep({ c, 3, 0.0f, false }, triReach, tt)) {
+                        t = std::fmin(t, tt);
+                        hit = true;
+                    }
+                });
+                if (!hit) { continue; }
+            } else if (!sweep(convexOf(o), o.kind == ShapeKind::HalfSpace ? 0.0f : reach(o, bo), t)) {
                 continue;
-            }
-            if (timeOfImpact(convexOf(f), f.local, sweeps[f.body], reach(f, bf), other, o.local, sweeps[o.body], otherReach,
-                             target, t) != Impact::Hit) {
-                t = coreT;
             }
             fraction[f.body] = std::fmin(fraction[f.body], t);
             if (bodies[o.body].type == MotionType::Dynamic) {

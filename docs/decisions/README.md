@@ -22,3 +22,5 @@ replaces the old one instead of editing it.
 16. [A bounds tree with persistent pairs](0016-bounds-tree-with-persistent-pairs.md)
 17. [Soft joints with a settle pass](0017-soft-joints-with-a-settle-pass.md)
 18. [Limits and motors move the whole joint](0018-limits-and-motors-move-the-whole-joint.md)
+19. [Meshes collide one triangle at a time](0019-meshes-collide-one-triangle-at-a-time.md)
+20. [A mesh pair has a contact per facing](0020-a-mesh-pair-has-a-contact-per-facing.md)

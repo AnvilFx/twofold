@@ -39,7 +39,7 @@ void saveScreenshot(const char* file) {
 }
 
 const char* geometryName(const Geometry& g) {
-    static const char* names[] = { "Sphere", "Box", "Cylinder", "Prism", "Hull", "Half-space" };
+    static const char* names[] = { "Sphere", "Box", "Cylinder", "Prism", "Hull", "Half-space", "Mesh" };
     return names[g.index()];
 }
 
@@ -60,6 +60,8 @@ std::string describe(const Geometry& g) {
         std::snprintf(text, sizeof(text), "Prism  %d sides  z %.3f to %.3f", (int)p->polygon.size(), p->zMin, p->zMax);
     } else if (const Hull* h = std::get_if<Hull>(&g)) {
         std::snprintf(text, sizeof(text), "Hull  %d points  at most %d corners", (int)h->points.size(), h->maxVertices);
+    } else if (const twofold::Mesh* m = std::get_if<twofold::Mesh>(&g)) {
+        std::snprintf(text, sizeof(text), "Mesh  %d triangles", m->mesh ? m->mesh->triangleCount() : 0);
     } else {
         std::snprintf(text, sizeof(text), "Half-space");
     }

@@ -10,6 +10,7 @@ add_library(twofold
     src/distance.cpp
     src/hull.cpp
     src/joint.cpp
+    src/mesh.cpp
     src/outline.cpp
     src/polyhedron.cpp
     src/query.cpp
@@ -35,7 +36,7 @@ endif()
 
 if(TWOFOLD_BUILD_TESTS)
     enable_testing()
-    add_executable(twofold_tests tests/main.cpp tests/test_hull.cpp tests/test_continuous.cpp tests/test_joints.cpp tests/test_outline.cpp tests/test_world.cpp)
+    add_executable(twofold_tests tests/main.cpp tests/test_hull.cpp tests/test_continuous.cpp tests/test_joints.cpp tests/test_mesh.cpp tests/test_outline.cpp tests/test_world.cpp)
     target_link_libraries(twofold_tests PRIVATE twofold)
     add_test(NAME twofold_tests COMMAND twofold_tests)
 endif()

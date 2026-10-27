@@ -62,6 +62,9 @@ bool rayShape(const Shape& s, const Transform& xf, const Vec3& origin, const Vec
         case ShapeKind::Sphere: hit = raySphere(s.radius, o, dl, maxFraction, fraction, normal); break;
         case ShapeKind::HalfSpace: hit = rayHalfSpace(o, dl, maxFraction, fraction, normal); break;
         case ShapeKind::Convex: hit = rayPolyhedron(s.poly, o, dl, maxFraction, fraction, normal); break;
+        case ShapeKind::Mesh:
+            if (const TriangleMesh::Data* m = meshOf(s)) { hit = rayMesh(*m, o, dl, maxFraction, fraction, normal); }
+            break;
     }
     if (hit) { normal = xf.q.rotate(normal); }
     return hit;
