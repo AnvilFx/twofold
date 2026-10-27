@@ -3,6 +3,25 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 12:36
+
+Found a hole in waking. A box sleeping on the ground, then a static box teleported with
+`setTransform` so the two overlap by 0.9. After 60 steps the box was still asleep and
+still overlapping. Waking follows existing contacts, and these two had never touched. The
+broadphase also skips any pair where neither body is moving, so the overlap was never
+even looked at.
+
+Two ways to fix it. Flag moved anchors so the next broadphase pairs them with sleeping
+bodies, or wake every sleeping body whose bounds overlap the anchor's new bounds right
+away, which is what Box2D does. Went with the second. The cost lands on the call that
+moved the body instead of the step, and it covers `setGeometry` and adding shapes for
+free. Half-spaces have infinite bounds, so they get a plane test instead. Otherwise
+nudging the ground would wake the whole world.
+
+While in there, noticed that removing a body woke everything else on its floor. The
+floor was in the list of touched bodies, and waking from a static body spreads to all of
+its contacts since the change on the 26th. Removal now only wakes dynamic bodies.
+
 ## 2026-10-27 12:17
 
 Fast spinners. A cylinder spinning at 25 rad/s can sink 50 mm into another before the

@@ -13,3 +13,4 @@ replaces the old one instead of editing it.
 7. [Continuous collision only past the speculative margin](0007-continuous-collision-past-the-speculative-margin.md)
 8. [Collide fast pairs again mid-step](0008-collide-fast-pairs-again-mid-step.md)
 9. [Locked directions have no effective mass](0009-locked-directions-have-no-effective-mass.md)
+10. [Moved anchors wake what they overlap](0010-moved-anchors-wake-what-they-overlap.md)

@@ -250,10 +250,13 @@ Waking floods through touching contacts from the bodies that need it:
 
 - A dynamic body wakes its whole island.
 - A static or kinematic body wakes the dynamic bodies touching it, without spreading past
-  them.
+  them, and every sleeping body whose bounds overlap its own. For a half-space the overlap
+  test is against its plane.
 - A sleeping body touched by a moving body wakes during the narrowphase.
 
-Removing a shape or body wakes the bodies that touched it.
+Removing a shape or body wakes the dynamic bodies that touched it.
+
+See [decision 10](decisions/0010-moved-anchors-wake-what-they-overlap.md).
 
 ## Units and tolerances
 
