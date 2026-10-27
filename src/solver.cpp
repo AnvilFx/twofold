@@ -114,8 +114,9 @@ void solveContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, co
             applyImpulse(b, pv, p.anchorB);
         }
 
-        for (int i = 0; i < c.count; ++i) {
-            ContactPoint& p = c.points[i];
+        // The relax pass takes friction points in reverse. One fixed order keeps stacks wobbling.
+        for (int j = 0; j < c.count; ++j) {
+            ContactPoint& p = c.points[useBias ? j : c.count - 1 - j];
             const Vec3 dv = velocityAt(b, p.anchorB) - velocityAt(a, p.anchorA);
             const Vec3 delta = c.tangent1 * (-p.tangentMass1 * dot(dv, c.tangent1))
                              + c.tangent2 * (-p.tangentMass2 * dot(dv, c.tangent2));

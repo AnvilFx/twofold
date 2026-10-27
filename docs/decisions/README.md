@@ -14,3 +14,6 @@ replaces the old one instead of editing it.
 8. [Collide fast pairs again mid-step](0008-collide-fast-pairs-again-mid-step.md)
 9. [Locked directions have no effective mass](0009-locked-directions-have-no-effective-mass.md)
 10. [Moved anchors wake what they overlap](0010-moved-anchors-wake-what-they-overlap.md)
+11. [Impact contacts get a second pass](0011-impact-contacts-get-a-second-pass.md)
+12. [Old contact points share their impulse](0012-old-contact-points-share-their-impulse.md)
+13. [The relax pass takes friction in reverse](0013-relax-pass-takes-friction-in-reverse.md)

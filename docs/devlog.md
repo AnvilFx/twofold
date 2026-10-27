@@ -3,6 +3,44 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 14:48
+
+A heavy box landing on a light sphere pushed the sphere 70 mm into the floor. The box hits
+the sphere, but the sphere's contact with the floor only gets its turn after the sphere has
+already been shoved down. One pass per substep doesn't carry an impact through a stack. Any
+body in a pair closing faster than the restitution threshold now gets all its contacts
+solved twice per pass. Down to 47 mm, and nothing at rest pays for it. Rain is 16% slower.
+
+The Tower preset sits with 7 mm of overlap between the bottom two boxes, even asleep.
+That's just the springs. 30 Hz holding up the weight above sags 7.2 mm. Box2D does the
+same. 8 substeps or a higher `contactHertz` stiffen it. Leaving the defaults.
+
+While watching the towers: three box stacks never fall asleep. They rock and twist at about
+9 Hz forever. Two things feeding it.
+
+- Warm starting gave a new point the full impulse of the first old point in reach. When the
+  manifold changes shape, two new points can take the same old point and that side gets
+  pushed twice as hard. Now each new point takes the nearest old point and they split it.
+- Friction points are always solved in the same order, so the first absorbs the error and
+  the last overshoots, every substep. The relax pass now goes through them backwards.
+
+Tried reversing the whole relax pass first. Stops the rocking too, but the overlap tail in
+Rain doubled. Reversing only friction keeps the tail where it was. 108 seeds:
+
+| | Rain, frames past 50 / 100 / 150 mm | Hulls awake at 900 frames |
+| --- | --- | --- |
+| Before | 519 / 29 / 1 | 38 |
+| Nearest point, split | 527 / 32 / 5 | 16 |
+| Plus whole relax reversed | 531 / 62 / 18 | 21 |
+| Plus relax friction reversed | 441 / 29 / 0 | 27 |
+
+Towers, Cutouts and Hulls now all end asleep. Flat layers goes from 16 bodies awake after a
+minute to 5.
+
+Also ran the same scenes through Jolt to see where things stand. Overlap is lower here in
+every scene but Pyramid, where Jolt with linear casting and 2 collision steps rests at
+1 mm against 2.2. Jolt is still 4 to 9 times faster per frame.
+
 ## 2026-10-27 12:36
 
 Found a hole in waking. A box sleeping on the ground, then a static box teleported with

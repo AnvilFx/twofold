@@ -102,9 +102,9 @@ every hull has volume.
    - halfway through, fast pairs are collided again (see below)
    - integrate velocities
    - warm start
-   - solve contacts with bias
+   - solve contacts with bias, then again for impact contacts
    - integrate positions
-   - relax: solve contacts again without bias
+   - relax: solve contacts again without bias, then again for impact contacts
 5. **Restitution.** One pass over points that were approaching faster than the threshold.
 6. **Clean up.** Forces and torques clear, and kinematic bodies snap to their targets.
 7. **Continuous collision.** Bodies that moved well past what their speculative contacts
@@ -172,10 +172,11 @@ vertex is used instead.
 ### Contact matching and warm starting
 
 Contacts are stored sorted by a key made of the two shape indices. A new point stores its
-position in body A's local frame. If an old point of the same pair is within the
-speculative distance of it, the new point takes that point's normal impulse and the
-tangent part of its friction impulse. This is all the warm starting there is, and it is
-enough for stacks to hold.
+position in body A's local frame and continues the nearest old point of the same pair
+within the speculative distance. It takes that point's normal impulse and the tangent part
+of its friction impulse. When several new points continue the same old point, they split
+its impulse evenly, so a manifold that changes shape doesn't push harder than before. See
+[decision 12](decisions/0012-old-contact-points-share-their-impulse.md).
 
 ## Solver
 
@@ -192,7 +193,15 @@ is its separation at the start plus how much `dp` and `dq` have closed it. So th
 sees separation change between substeps without collision running again.
 
 Friction is a two-axis cone, clamped by the point's normal impulse times the mixed
-friction. The default mixing is the geometric mean for friction and the maximum for
+friction. The biased pass solves friction points in order, the relax pass in reverse. With
+one fixed order small stacks rock forever and never sleep. See
+[decision 13](decisions/0013-relax-pass-takes-friction-in-reverse.md).
+
+A body in a pair that closes faster than the restitution threshold has all its contacts
+solved twice in each pass. One pass doesn't carry an impact through a stack within a
+substep, so a heavy body landing on a light one would crush it into the floor. Resting
+bodies pay nothing for this. See
+[decision 11](decisions/0011-impact-contacts-get-a-second-pass.md). The default mixing is the geometric mean for friction and the maximum for
 restitution. Both can be replaced with `setFrictionMix` and `setRestitutionMix`.
 
 A direction the bodies cannot move in, such as the depth axis of a planar body, has an
@@ -210,8 +219,8 @@ the substeps.
 
 Before that, every active contact is rebased. Its anchors become the bodies' current lever
 arms, its stored separation absorbs the distance already moved, and `dp`, `dq` and the
-base orientation of every body reset. New points then take impulses from old points
-within the speculative distance, and the restitution data of the nearest old point.
+base orientation of every body reset. New points then take impulses from old points the
+same way as after the narrowphase, and the restitution data of the nearest old point.
 
 See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md).
 
@@ -298,6 +307,9 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   tree after that.
 - A planar body on a half-space goes through the 3D path. It behaves correctly but does
   not get the exact circles of the planar path.
+- Contacts are springs, so a stack sags under its own weight. A three box tower rests
+  with 7 mm of overlap between the bottom two boxes. More substeps or a higher
+  `contactHertz` make it stiffer.
 - Fast spinners that end up deep inside each other under a pile can stay 150 to 220 mm
   deep for 8 to 12 frames before they recover. This also happens without the mid-step
   refresh. Pushing deep pairs out harder fixes it but keeps some hull piles from ever

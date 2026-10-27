@@ -837,3 +837,20 @@ TEST(removing_a_body_leaves_others_on_its_floor_asleep) {
     w.destroyBody(a);
     CHECK(!w.isAwake(b));
 }
+
+TEST(heavy_body_landing_on_a_light_one_does_not_crush_it_into_the_floor) {
+    float worst = 0.0f;
+    for (int trial = 0; trial < 8; ++trial) {
+        World w;
+        addBox(w, { 0, -0.5f, 0 }, { 4, 0.5f, 4 }, MotionType::Static);
+        const BodyId light = addSphere(w, { 0, 0.235f, 0 }, 0.235f);
+        const BodyId heavy = addBox(w, { 0.05f * (float)trial, 1.0f, 0.03f * (float)trial }, { 0.4f, 0.4f, 0.4f });
+        w.setLinearVelocity(heavy, { 0, -6.0f - 1.0f * (float)trial, 0 });
+        for (int i = 0; i < 30; ++i) {
+            w.step(kDt);
+            worst = std::fmax(worst, deepestContact(w));
+        }
+        CHECK(w.isValid(light));
+    }
+    CHECK(worst < 0.06f);
+}
