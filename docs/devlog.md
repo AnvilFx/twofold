@@ -3,6 +3,34 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 12:17
+
+Fast spinners. A cylinder spinning at 25 rad/s can sink 50 mm into another before the
+contact catches up, because its contact points are computed once at the start of the step
+and the spin carries the real overlap away from them. Pairs that move more than the
+speculative distance in a step are now collided again halfway through the substeps.
+
+First version made rolling discs slow down for no reason. The new anchors were measured
+in the wrong frame and acted like rolling resistance. Fixed by rebasing every contact to
+the bodies' current lever arms before re-colliding. The second problem was bounce:
+restitution needs the approach speed from the start of the step, and the new points
+didn't have it, so a full-restitution ball lost about 15% of its height. New points now
+copy it from the nearest old point.
+
+36 seeds each:
+
+| Scene | Frames past 50 / 100 mm, before | After |
+| --- | --- | --- |
+| Rain | 907 / 110 | 589 / 53 |
+| Hulls | 298 / 20 | 129 / 0 |
+
+Costs 13% on Rain and 20% on Hulls. Pyramid, Tower and Dominoes don't change at all.
+
+Also tried pushing deep pairs out harder. It clears the worst overlaps faster but some
+hull piles then never go to sleep, so that's out. There is still a case where two spinning
+cylinders get trapped under a pile, 150 to 220 mm deep for 8 to 12 frames. It happens
+without the refresh too. Not fixed.
+
 ## 2026-10-27 02:33
 
 Viewer came up tiny on a high DPI monitor. It now scales with the monitor it opens on.

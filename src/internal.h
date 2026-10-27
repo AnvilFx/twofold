@@ -145,8 +145,10 @@ struct Body {
     Mat3 invInertiaWorld = Mat3::zero();
     Mat3 linearProj;
     Mat3 angularProj;
+    // Motion since qBase, the orientation contact anchors are measured in.
     Vec3 dp;
     Quat dq;
+    Quat qBase;
     Quat q0;
     Vec3 com0;
     // How far any point of the body could move at the velocities the step started with.
@@ -255,7 +257,10 @@ struct SolverContext {
     float restitutionThreshold = 0.0f;
 };
 
+void prepareContact(const Body& a, const Body& b, Contact& c);
 void prepareContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active);
+// Re-expresses anchors as the bodies' current lever arms, before their dp and dq are reset.
+void rebaseContact(const Body& a, const Body& b, Contact& c);
 void warmStart(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active);
 void solveContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active,
                    const SolverContext& ctx, bool useBias);

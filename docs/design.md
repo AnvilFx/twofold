@@ -95,8 +95,11 @@ every hull has volume.
    inherit impulses from the old ones they continue.
 2. **Step state.** Every body records its pose at the start of the step, resets its motion
    since that pose (`dp`, `dq`), and refreshes its world inverse mass.
-3. **Active contacts.** Contacts with an awake dynamic body take part in the solve.
+3. **Active contacts.** Contacts with an awake dynamic body take part in the solve. Pairs
+   whose relative motion over the step exceeds the speculative distance are also listed as
+   fast.
 4. **Substeps.** `substeps` times (4 by default):
+   - halfway through, fast pairs are collided again (see below)
    - integrate velocities
    - warm start
    - solve contacts with bias
@@ -192,6 +195,20 @@ Friction is a two-axis cone, clamped by the point's normal impulse times the mix
 friction. The default mixing is the geometric mean for friction and the maximum for
 restitution. Both can be replaced with `setFrictionMix` and `setRestitutionMix`.
 
+### Mid-step refresh
+
+Contact points come from the start of the step. A body spinning fast carries those points
+away from where the overlap really is, and the solver pushes on points that no longer mean
+anything. Pairs listed as fast at the start of the step are collided again halfway through
+the substeps.
+
+Before that, every active contact is rebased. Its anchors become the bodies' current lever
+arms, its stored separation absorbs the distance already moved, and `dp`, `dq` and the
+base orientation of every body reset. New points then take impulses from old points
+within the speculative distance, and the restitution data of the nearest old point.
+
+See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md).
+
 ## Continuous collision
 
 Speculative contacts cover motion at the velocities a step starts with. A body that speeds
@@ -272,3 +289,7 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   tree after that.
 - A planar body on a half-space goes through the 3D path. It behaves correctly but does
   not get the exact circles of the planar path.
+- Fast spinners that end up deep inside each other under a pile can stay 150 to 220 mm
+  deep for 8 to 12 frames before they recover. This also happens without the mid-step
+  refresh. Pushing deep pairs out harder fixes it but keeps some hull piles from ever
+  sleeping.
