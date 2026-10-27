@@ -52,11 +52,54 @@ struct Shape {
     Polyhedron poly;
     // Distance from the shape origin to its farthest point.
     float extent = 0.0f;
+    Vec3 centroid;
+    // Distance from the centroid to the nearest face.
+    float minExtent = 0.0f;
 };
 
 void buildShape(Shape& shape);
 MassProperties shapeMass(const Shape& shape);
 void shapeBounds(const Shape& shape, const Transform& xf, Vec3& lo, Vec3& hi);
+
+// Points in shape space, grown by radius. A half-space has no points.
+struct Convex {
+    const Vec3* points = nullptr;
+    int count = 0;
+    float radius = 0.0f;
+    bool halfSpace = false;
+};
+
+Convex convexOf(const Shape& shape);
+
+// Normal points from A to B. Overlapping shapes have a distance of zero or less.
+struct DistanceResult {
+    Vec3 pointA;
+    Vec3 pointB;
+    Vec3 normal;
+    float distance = 0.0f;
+};
+
+DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb);
+
+// Center of mass and rotation of a body moving from its pose at t = 0 to its pose at t = 1.
+struct Sweep {
+    Vec3 localCenter;
+    Vec3 c0, c1;
+    Quat q0;
+    Vec3 axis;
+    float angle = 0.0f;
+
+    Transform at(float t) const;
+};
+
+Sweep makeSweep(const Vec3& localCenter, const Vec3& c0, const Quat& q0, const Vec3& c1, const Quat& q1);
+
+enum class Impact : uint8_t { Miss, Hit, Touching };
+
+// First t at which two swept shapes come within target of each other. Reach bounds the distance from
+// the center of mass to any point of the shape. Shapes already that close at t = 0 are Touching.
+Impact timeOfImpact(const Convex& a, const Transform& localA, const Sweep& sweepA, float reachA, const Convex& b,
+                    const Transform& localB, const Sweep& sweepB, float reachB, float target, float& t);
 
 // Casts origin + t * d for t in [0, maxFraction]. A ray that starts inside the shape misses.
 bool rayShape(const Shape& shape, const Transform& xf, const Vec3& origin, const Vec3& d, float maxFraction,

@@ -7,6 +7,7 @@ option(TWOFOLD_BUILD_VIEWER "Build the interactive viewer, which downloads rayli
 add_library(twofold
     src/collide2d.cpp
     src/collide3d.cpp
+    src/distance.cpp
     src/hull.cpp
     src/outline.cpp
     src/polyhedron.cpp

@@ -31,6 +31,7 @@ std::vector<Vec2> regularPolygon(float radius, int sides) {
 void buildShape(Shape& s) {
     s.poly = Polyhedron{};
     s.radius = 0.0f;
+    s.centroid = Vec3{};
     if (const Sphere* sp = std::get_if<Sphere>(&s.geometry)) {
         s.kind = ShapeKind::Sphere;
         s.radius = sp->radius;
@@ -59,10 +60,16 @@ void buildShape(Shape& s) {
         s.kind = ShapeKind::HalfSpace;
         s.extent = 0.0f;
     }
+    s.minExtent = s.radius;
     if (s.kind == ShapeKind::Convex) {
         float e = 0.0f;
         for (const Vec3& v : s.poly.vertices) { e = std::max(e, length(v)); }
         s.extent = e;
+        s.centroid = s.poly.centroid;
+        s.minExtent = e;
+        for (const Polyhedron::Face& f : s.poly.faces) {
+            s.minExtent = std::min(s.minExtent, f.offset - dot(f.normal, s.centroid));
+        }
     }
 }
 
