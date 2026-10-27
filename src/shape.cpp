@@ -56,6 +56,13 @@ void buildShape(Shape& s) {
             s.kind = ShapeKind::Convex;
             s.poly = makePolyhedron(std::move(mesh.vertices), mesh.faces);
         }
+    } else if (std::holds_alternative<Mesh>(s.geometry)) {
+        s.kind = ShapeKind::Mesh;
+        s.extent = 0.0f;
+        if (const TriangleMesh::Data* m = meshOf(s)) {
+            for (const Vec3& v : m->vertices) { s.extent = std::max(s.extent, length(v)); }
+            s.centroid = (m->nodes[0].lo + m->nodes[0].hi) * 0.5f;
+        }
     } else {
         s.kind = ShapeKind::HalfSpace;
         s.extent = 0.0f;
@@ -107,6 +114,23 @@ void shapeBounds(const Shape& s, const Transform& xf, Vec3& lo, Vec3& hi) {
         const Vec3 r{ s.radius, s.radius, s.radius };
         lo = xf.p - r;
         hi = xf.p + r;
+        return;
+    }
+    if (s.kind == ShapeKind::Mesh) {
+        const TriangleMesh::Data* m = meshOf(s);
+        if (!m) {
+            lo = hi = xf.p;
+            return;
+        }
+        const Vec3 c = xf.apply((m->nodes[0].lo + m->nodes[0].hi) * 0.5f);
+        const Vec3 e = (m->nodes[0].hi - m->nodes[0].lo) * 0.5f;
+        const Mat3 r = xf.q.toMat3();
+        Vec3 reach;
+        for (int i = 0; i < 3; ++i) {
+            reach[i] = std::fabs(r.r[i].x) * e.x + std::fabs(r.r[i].y) * e.y + std::fabs(r.r[i].z) * e.z;
+        }
+        lo = c - reach;
+        hi = c + reach;
         return;
     }
     lo = hi = xf.apply(s.poly.vertices[0]);

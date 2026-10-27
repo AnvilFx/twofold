@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "scene.h"
@@ -470,6 +471,84 @@ void joints(Scene& s) {
     }
 }
 
+
+template <typename F>
+std::shared_ptr<const TriangleMesh> heightfield(int cells, float size, F height) {
+    std::vector<Vec3> v;
+    std::vector<uint32_t> idx;
+    const float half = 0.5f * size * (float)cells;
+    for (int z = 0; z <= cells; ++z) {
+        for (int x = 0; x <= cells; ++x) {
+            const float px = size * (float)x - half, pz = size * (float)z - half;
+            v.push_back({ px, height(px, pz), pz });
+        }
+    }
+    for (int z = 0; z < cells; ++z) {
+        for (int x = 0; x < cells; ++x) {
+            const uint32_t a = (uint32_t)(z * (cells + 1) + x), b = a + 1, c = a + (uint32_t)cells + 1, d = c + 1;
+            idx.insert(idx.end(), { a, c, b, b, c, d });
+        }
+    }
+    return std::make_shared<TriangleMesh>(v, idx);
+}
+
+std::shared_ptr<const TriangleMesh> dish(float radius, int rings, int segments, float depth) {
+    std::vector<Vec3> v{ { 0, 0, 0 } };
+    std::vector<uint32_t> idx;
+    for (int r = 1; r <= rings; ++r) {
+        const float d = radius * (float)r / (float)rings;
+        for (int k = 0; k < segments; ++k) {
+            const float a = 2.0f * kPi * (float)k / (float)segments;
+            v.push_back({ d * std::cos(a), depth * d * d / (radius * radius), d * std::sin(a) });
+        }
+    }
+    auto at = [&](int r, int k) { return r == 0 ? 0u : (uint32_t)(1 + (r - 1) * segments + (k % segments)); };
+    for (int r = 0; r < rings; ++r) {
+        for (int k = 0; k < segments; ++k) {
+            idx.insert(idx.end(), { at(r, k), at(r + 1, k + 1), at(r + 1, k) });
+            if (r > 0) { idx.insert(idx.end(), { at(r, k), at(r, k + 1), at(r + 1, k + 1) }); }
+        }
+    }
+    return std::make_shared<TriangleMesh>(v, idx);
+}
+
+void meshesUpdate(Scene& s, float dt) {
+    const float t = s.time + dt;
+    s.world.setKinematicTarget(s.driven[0], { 6, 4.5f, 0 }, Quat::axisAngle({ 0, 0, 1 }, 0.3f * std::sin(0.9f * t)), dt);
+}
+
+void meshes(Scene& s) {
+    ground(s);
+    s.add(body({}, MotionType::Static), shape(twofold::Mesh{ heightfield(48, 0.5f, [](float x, float z) {
+              return 1.3f + 0.9f * std::sin(0.35f * x) * std::cos(0.28f * z) + 0.25f * std::sin(0.8f * x + 1.3f * z);
+          }) }),
+          kStatic);
+    const BodyId tray = s.add(body({ 6, 4.5f, 0 }, MotionType::Kinematic), shape(twofold::Mesh{ dish(2.5f, 6, 24, 0.8f) }), kKinematic);
+    s.driven.push_back(tray);
+    s.update = meshesUpdate;
+
+    Rng rng;
+    for (int i = 0; i < 120; ++i) {
+        const bool overTray = i % 6 == 0;
+        const Vec3 p = overTray ? Vec3{ rng.range(4.8f, 7.2f), 7.0f + 0.8f * (float)(i / 6), rng.range(-1.2f, 1.2f) }
+                                : Vec3{ rng.range(-9, 9), 6.0f + 0.15f * (float)i, rng.range(-9, 9) };
+        const Quat q = Quat::axisAngle({ rng.range(-1, 1), rng.range(-1, 1), rng.range(-1, 1) }, rng.range(0, kPi));
+        Geometry g;
+        switch (i % 4) {
+            case 0: g = Box{ { rng.range(0.2f, 0.4f), rng.range(0.2f, 0.4f), rng.range(0.2f, 0.4f) } }; break;
+            case 1: g = Sphere{ rng.range(0.2f, 0.4f) }; break;
+            case 2: g = Cylinder{ rng.range(0.2f, 0.35f), rng.range(0.15f, 0.35f) }; break;
+            default: g = Hull{ gem(8, rng.range(0.25f, 0.4f), 0.12f, 0.3f), 32 }; break;
+        }
+        s.add(body(p, MotionType::Dynamic, q), shape(g), solid(i));
+    }
+    for (int i = 0; i < 8; ++i) {
+        const Vec3 p{ -7.0f + 2.0f * (float)i, 6.0f, 0 };
+        s.add(planar(p, Quat::axisAngle({ 0, 0, 1 }, rng.range(0, kPi))), shape(Prism{ regular(5 + i % 3, 0.35f), -0.05f, 0.05f }, 0.5f),
+              flat(i));
+    }
+}
+
 }
 
 BodyId Scene::add(const BodyDesc& desc, const ShapeDesc& shapeDesc, Color color) {
@@ -503,6 +582,8 @@ const std::vector<SceneInfo>& sceneList() {
           cutouts, { 0, 4.5f, 0 }, 17, 0.25f, 0.15f },
         { "Joints", "A point chain, a weld, a door, pendulums with and without friction, a slider rail, a motor lift, a rod, "
           "a rope, a spring, a planar chain, a bridge and a motor wheel.", joints, { 1, 3, -1 }, 34, 0.5f, 0.3f },
+        { "Meshes", "A triangle mesh terrain and a rocking kinematic dish, with 3D and planar bodies falling onto them.", meshes,
+          { 1, 2, 0 }, 30, 0.6f, 0.45f },
     };
     return scenes;
 }

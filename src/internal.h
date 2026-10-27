@@ -3,9 +3,52 @@
 #include <cstdint>
 #include <vector>
 
+#include "twofold/mesh.h"
 #include "twofold/world.h"
 
 namespace twofold {
+
+struct TriangleMesh::Data {
+    // A leaf holds count triangles from first. An inner node has a count of zero and its children at first
+    // and first + 1.
+    struct Node {
+        Vec3 lo, hi;
+        int first = 0;
+        int count = 0;
+    };
+
+    std::vector<Vec3> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<Vec3> normals;
+    // Bit k is set when edge k, from corner k to corner k + 1, may give a contact its own normal on the
+    // front side. Bit 3 + k is the same for the back side.
+    std::vector<uint8_t> edges;
+    std::vector<Node> nodes;
+
+    void corners(int t, Vec3 out[3]) const {
+        for (int k = 0; k < 3; ++k) { out[k] = vertices[indices[3 * t + k]]; }
+    }
+
+    template <class Visit>
+    void query(const Vec3& lo, const Vec3& hi, Visit&& visit) const {
+        if (nodes.empty()) { return; }
+        int stack[64];
+        int top = 0;
+        stack[top++] = 0;
+        while (top > 0) {
+            const Node& n = nodes[stack[--top]];
+            if (n.lo.x > hi.x || n.hi.x < lo.x || n.lo.y > hi.y || n.hi.y < lo.y || n.lo.z > hi.z || n.hi.z < lo.z) {
+                continue;
+            }
+            if (n.count > 0) {
+                for (int t = n.first; t < n.first + n.count; ++t) { visit(t); }
+            } else {
+                stack[top++] = n.first + 1;
+                stack[top++] = n.first;
+            }
+        }
+    }
+};
 
 struct Polyhedron {
     // A face's vertex loop in indices.
@@ -37,7 +80,7 @@ Polyhedron makePrism(const std::vector<Vec2>& polygon, float zMin, float zMax);
 Polyhedron makeBox(const Vec3& halfExtents);
 MassProperties polyhedronMass(const Polyhedron& poly, float density);
 
-enum class ShapeKind : uint8_t { Sphere, Convex, HalfSpace };
+enum class ShapeKind : uint8_t { Sphere, Convex, HalfSpace, Mesh };
 
 struct Shape {
     uint32_t generation = 0;
@@ -69,6 +112,10 @@ struct Shape {
 void buildShape(Shape& shape);
 MassProperties shapeMass(const Shape& shape);
 void shapeBounds(const Shape& shape, const Transform& xf, Vec3& lo, Vec3& hi);
+// Null unless the shape is a mesh with at least one triangle.
+const TriangleMesh::Data* meshOf(const Shape& shape);
+// Bounds in the mesh's frame of the box lo, hi in the world.
+void boundsInMesh(const Transform& xm, const Vec3& lo, const Vec3& hi, Vec3& meshLo, Vec3& meshHi);
 
 // Points in shape space, grown by radius. A half-space has no points.
 struct Convex {
@@ -109,6 +156,10 @@ enum class Impact : uint8_t { Miss, Hit, Touching };
 // the center of mass to any point of the shape. Shapes already that close at t = 0 are Touching.
 Impact timeOfImpact(const Convex& a, const Transform& localA, const Sweep& sweepA, float reachA, const Convex& b,
                     const Transform& localB, const Sweep& sweepB, float reachB, float target, float& t);
+
+// Casts o + t * d in the mesh's frame. The normal faces the ray.
+bool rayMesh(const TriangleMesh::Data& mesh, const Vec3& o, const Vec3& d, float maxFraction, float& fraction,
+             Vec3& normal);
 
 // Casts origin + t * d for t in [0, maxFraction]. A ray that starts inside the shape misses.
 bool rayShape(const Shape& shape, const Transform& xf, const Vec3& origin, const Vec3& d, float maxFraction,
@@ -213,6 +264,11 @@ void collide(const Shape& a, const Transform& xa, const Shape& b, const Transfor
 bool collidePlanar(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
                    const Vec3& n, float margin, const Tolerances& tol, Manifold& m);
 
+// Collides a sphere or polyhedron with a mesh. Each group of triangles facing the same way gives one
+// manifold, with its normal pointing from the mesh.
+void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, const Transform& xo, float margin,
+                 const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out);
+
 void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m);
 
 struct ContactPoint {
@@ -245,6 +301,8 @@ struct PointAxes {
 
 struct Contact {
     uint64_t key = 0;
+    // Orders the contacts of one pair. Only a mesh pair has more than one.
+    uint32_t part = 0;
     uint32_t shapeA = 0, shapeB = 0;
     uint32_t bodyA = 0, bodyB = 0;
     Vec3 normal;

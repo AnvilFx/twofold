@@ -3,6 +3,42 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 19:19
+
+Triangle meshes, for static and kinematic bodies. `TriangleMesh` takes vertices and
+indices, merges vertices at the same position, drops degenerate triangles and builds a
+median split tree over the rest. Shapes share it through a `shared_ptr`, so one terrain
+can back any number of bodies. Both sides of every triangle collide, since imported models
+are rarely closed or consistently wound.
+
+Each triangle goes through the existing convex code as a two-faced polyhedron. Face
+queries and clipping needed nothing new. The edge query did: a triangle edge's arc on the
+Gauss map is a half circle from the front normal round to the back, not the short arc
+between two faces, so it has its own version.
+
+Seams are the usual problem. Left alone, a box sliding across a flat grid hits the edges
+of the next triangle and hops. Each edge carries a flag per side, set when the
+neighbor folds away from that side, and a contact on a flagged-off edge or corner is made
+again against the face. Boxes slide and balls roll straight across.
+
+A box in a V crease needs two normals at once, so a pair can now hold more than one
+contact. Only mesh pairs ever do, and every older scene steps bit for bit as before.
+
+The Meshes scene found a bad one. The deepest penetration plot sat at 300 to 800 mm with
+nothing visibly wrong. A body resting near a ridge is behind the plane of the triangle on
+the far side, that triangle's ridge edge is flagged off from behind, and the face contact
+that replaced it pushed straight down through the body. The side also came from the sign
+of a nearly sideways normal, which can point either way. The side now comes from the face query, and a
+face contact deeper than SAT says the shapes overlap is dropped, since the neighbor
+already covers it. Deepest contact on a hilly mesh is now a few centimeters while things
+land.
+
+Rays use Möller-Trumbore down the tree. Continuous collision sweeps a fast body against
+each triangle near its path.
+
+Scene: 131 bodies on a 4608 triangle terrain and a rocking kinematic dish, about 1 ms a
+step averaged over 20 seconds.
+
 ## 2026-10-27 18:41
 
 Joints: point, fixed, hinge, slider and distance. Hinges and sliders take limits and a

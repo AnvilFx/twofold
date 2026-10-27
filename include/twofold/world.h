@@ -77,7 +77,14 @@ struct Hull {
 // Everything below the local xy plane. Static bodies only.
 struct HalfSpace {};
 
-using Geometry = std::variant<Sphere, Box, Cylinder, Prism, Hull, HalfSpace>;
+class TriangleMesh;
+
+// Static and kinematic bodies only. Both sides of every triangle collide.
+struct Mesh {
+    std::shared_ptr<const TriangleMesh> mesh;
+};
+
+using Geometry = std::variant<Sphere, Box, Cylinder, Prism, Hull, HalfSpace, Mesh>;
 
 struct ShapeDesc {
     Geometry geometry = Box{};
