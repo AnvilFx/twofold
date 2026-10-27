@@ -203,6 +203,34 @@ TEST(box_across_slab_edge_does_not_sink) {
     }
 }
 
+TEST(spinning_cylinders_meet_without_sinking) {
+    float worst = 0.0f;
+    for (int trial = 0; trial < 60; ++trial) {
+        World w;
+        addBox(w, { 0, -0.5f, 0 }, { 4, 0.5f, 4 }, MotionType::Static);
+        const float t = (float)trial;
+        const Quat q = Quat::axisAngle(normalize(Vec3{ std::sin(t), std::cos(1.7f * t), std::sin(2.3f * t) }), 0.7f * t);
+        const Vec3 spin = normalize(Vec3{ std::cos(1.3f * t), 0.3f * std::sin(t), std::sin(1.3f * t) }) * 25.0f;
+        for (int k = 0; k < 2; ++k) {
+            const float side = k ? 1.0f : -1.0f;
+            BodyDesc bd;
+            bd.position = { 0.7f * side, 0.6f + (float)k * 0.1f * std::sin(t), 0 };
+            bd.rotation = k ? q.conjugate() : q;
+            const BodyId b = w.createBody(bd);
+            ShapeDesc sd;
+            sd.geometry = Cylinder{ 0.3f, 0.2f };
+            w.addShape(b, sd);
+            w.setAngularVelocity(b, spin * -side);
+            w.setLinearVelocity(b, { -3.0f * side, 0, 0 });
+        }
+        for (int i = 0; i < 90; ++i) {
+            w.step(kDt);
+            worst = std::fmax(worst, deepestContact(w));
+        }
+    }
+    CHECK(worst < 0.02f);
+}
+
 TEST(box_stack_stays_upright) {
     World w;
     addGround(w);

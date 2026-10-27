@@ -37,4 +37,5 @@ collision runs once per step.
 - Overlap recovers at a bounded speed and the relax pass removes the pushout velocity, so
   deep overlap does not launch bodies.
 - Each substep costs a full solve.
-- Contact points are fixed for the whole step.
+- Contact points are fixed for the whole step. Fast spinning bodies outrun them, which is
+  what [decision 8](0008-collide-fast-pairs-again-mid-step.md) deals with.

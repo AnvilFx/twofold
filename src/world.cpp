@@ -70,6 +70,27 @@ bool movingAwake(const Body& b) {
     return false;
 }
 
+// The point of old that a new point at localA continues, or -1.
+int matchPoint(const Contact& old, const Vec3& localA, float matchSq) {
+    for (int k = 0; k < old.count; ++k) {
+        if (lengthSquared(old.points[k].localA - localA) <= matchSq) { return k; }
+    }
+    return -1;
+}
+
+int nearestPoint(const Contact& old, const Vec3& localA) {
+    int best = -1;
+    float bestSq = FLT_MAX;
+    for (int k = 0; k < old.count; ++k) {
+        const float d = lengthSquared(old.points[k].localA - localA);
+        if (d < bestSq) {
+            best = k;
+            bestSq = d;
+        }
+    }
+    return best;
+}
+
 struct Proxy {
     Vec3 lo, hi;
     uint32_t shape = 0;
@@ -158,6 +179,23 @@ struct World::Impl {
             e = std::fmax(e, s.extent + length(s.local.p - b.localCenter));
         }
         return e;
+    }
+
+    float relativeTravel(const Body& a, const Body& b, float dt) const {
+        return (length(b.v - a.v) + length(a.w) * bodyExtent(a) + length(b.w) * bodyExtent(b)) * dt;
+    }
+
+    void collidePair(const Shape& sa, const Shape& sb, float dt, Manifold& m) const {
+        const Body& ba = bodies[sa.body];
+        const Body& bb = bodies[sb.body];
+        const Transform xa = ba.xf * sa.local;
+        const Transform xb = bb.xf * sb.local;
+        const float margin = tol.speculative + relativeTravel(ba, bb, dt);
+        Vec3 n;
+        if (!usePlanar(ba, bb, n) || !collidePlanar(sa, xa, sb, xb, n, margin, tol, m)) {
+            const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt };
+            collide(sa, xa, sb, xb, margin, tol, mo, m);
+        }
     }
 
     void removeContacts(uint32_t body, int shape) {
@@ -283,18 +321,8 @@ struct World::Impl {
             const Shape& sb = shapes[ib];
             const Body& ba = bodies[sa.body];
             const Body& bb = bodies[sb.body];
-            const Transform xa = ba.xf * sa.local;
-            const Transform xb = bb.xf * sb.local;
-
-            const float motion = (length(bb.v - ba.v) + length(ba.w) * bodyExtent(ba) + length(bb.w) * bodyExtent(bb)) * dt;
-            const float margin = tol.speculative + motion;
-
             Manifold m;
-            Vec3 n;
-            if (!usePlanar(ba, bb, n) || !collidePlanar(sa, xa, sb, xb, n, margin, tol, m)) {
-                const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt };
-                collide(sa, xa, sb, xb, margin, tol, mo, m);
-            }
+            collidePair(sa, sb, dt, m);
             if (m.count == 0) { continue; }
 
             Contact c;
@@ -319,14 +347,11 @@ struct World::Impl {
                 p.separation = m.points[i].separation;
                 p.anchorA = m.points[i].position - ba.com;
                 p.anchorB = m.points[i].position - bb.com;
-                if (!hasOld) { continue; }
-                for (int k = 0; k < old->count; ++k) {
-                    const ContactPoint& o = old->points[k];
-                    if (lengthSquared(o.localA - p.localA) > matchSq) { continue; }
-                    p.normalImpulse = o.normalImpulse;
-                    p.tangentImpulse = o.tangentImpulse - c.normal * dot(c.normal, o.tangentImpulse);
-                    break;
-                }
+                const int k = hasOld ? matchPoint(*old, p.localA, matchSq) : -1;
+                if (k < 0) { continue; }
+                const ContactPoint& o = old->points[k];
+                p.normalImpulse = o.normalImpulse;
+                p.tangentImpulse = o.tangentImpulse - c.normal * dot(c.normal, o.tangentImpulse);
             }
 
             if (ba.type == MotionType::Dynamic && !ba.awake && movingAwake(bb)) { toWake.push_back(sa.body); }
@@ -343,6 +368,58 @@ struct World::Impl {
         wakeBodies(toWake);
         profile.manifolds = (int)contacts.size();
         profile.narrowphase = millisecondsSince(narrowStart);
+    }
+
+    // A spinning body carries its contact points away from the overlap, so fast pairs are collided again mid-step.
+    void refreshContacts(const std::vector<uint32_t>& active, const std::vector<uint32_t>& fast, float remaining) {
+        for (uint32_t ci : active) {
+            Contact& c = contacts[ci];
+            rebaseContact(bodies[c.bodyA], bodies[c.bodyB], c);
+        }
+        for (Body& b : bodies) {
+            b.dp = Vec3{};
+            b.dq = Quat{};
+            b.qBase = b.xf.q;
+        }
+
+        const float matchSq = tol.speculative * tol.speculative;
+        for (uint32_t ci : fast) {
+            Contact& c = contacts[ci];
+            const Body& a = bodies[c.bodyA];
+            const Body& b = bodies[c.bodyB];
+            Manifold m;
+            collidePair(shapes[c.shapeA], shapes[c.shapeB], remaining, m);
+            if (m.count == 0) {
+                c.count = 0;
+                continue;
+            }
+            const Contact old = c;
+            c.normal = m.normal;
+            c.tangent1 = perpendicular(m.normal);
+            c.tangent2 = cross(m.normal, c.tangent1);
+            c.count = m.count;
+            for (int i = 0; i < m.count; ++i) {
+                ContactPoint& p = c.points[i];
+                p = ContactPoint{};
+                p.localA = a.xf.applyInverse(m.points[i].position);
+                p.separation = m.points[i].separation;
+                p.anchorA = m.points[i].position - a.com;
+                p.anchorB = m.points[i].position - b.com;
+            }
+            prepareContact(a, b, c);
+            // Restitution needs the speed the pair approached at, from the nearest point the step started with.
+            for (int i = 0; i < c.count; ++i) {
+                ContactPoint& p = c.points[i];
+                const int k = nearestPoint(old, p.localA);
+                if (k < 0) { continue; }
+                const ContactPoint& o = old.points[k];
+                p.relativeVelocity = o.relativeVelocity;
+                p.maxNormalImpulse = o.maxNormalImpulse;
+                if (lengthSquared(o.localA - p.localA) > matchSq) { continue; }
+                p.normalImpulse = o.normalImpulse;
+                p.tangentImpulse = o.tangentImpulse - c.normal * dot(c.normal, o.tangentImpulse);
+            }
+        }
     }
 
     void integrateVelocities(float h) {
@@ -362,7 +439,7 @@ struct World::Impl {
             b.com += b.v * h;
             b.dp += b.v * h;
             b.xf.q = integrate(b.xf.q, b.w, h);
-            b.dq = b.xf.q * b.q0.conjugate();
+            b.dq = b.xf.q * b.qBase.conjugate();
             b.xf.p = b.com - b.xf.q.rotate(b.localCenter);
             if (b.type == MotionType::Dynamic) { updateInverseMass(b); }
         }
@@ -569,6 +646,7 @@ struct World::Impl {
         for (Body& b : bodies) {
             if (!b.alive) { continue; }
             b.q0 = b.xf.q;
+            b.qBase = b.xf.q;
             b.com0 = b.com;
             b.expectedTravel = (length(b.v) + length(b.w) * bodyExtent(b)) * dt;
             b.dp = Vec3{};
@@ -576,12 +654,15 @@ struct World::Impl {
             updateInverseMass(b);
         }
 
-        std::vector<uint32_t> active;
+        std::vector<uint32_t> active, fast;
         for (uint32_t i = 0; i < contacts.size(); ++i) {
             const Contact& c = contacts[i];
             const Body& a = bodies[c.bodyA];
             const Body& b = bodies[c.bodyB];
-            if ((a.type == MotionType::Dynamic && a.awake) || (b.type == MotionType::Dynamic && b.awake)) { active.push_back(i); }
+            if ((a.type == MotionType::Dynamic && a.awake) || (b.type == MotionType::Dynamic && b.awake)) {
+                active.push_back(i);
+                if (relativeTravel(a, b, dt) > tol.speculative) { fast.push_back(i); }
+            }
         }
 
         SolverContext ctx;
@@ -596,6 +677,7 @@ struct World::Impl {
         const Clock::time_point solveStart = Clock::now();
         prepareContacts(bodies, contacts, active);
         for (int i = 0; i < n; ++i) {
+            if (i > 0 && i == n / 2 && !fast.empty()) { refreshContacts(active, fast, (float)(n - i) * h); }
             integrateVelocities(h);
             warmStart(bodies, contacts, active);
             solveContacts(bodies, contacts, active, ctx, true);

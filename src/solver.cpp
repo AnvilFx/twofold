@@ -31,21 +31,36 @@ Softness makeSoft(float hertz, float zeta, float h) {
     return { omega / a1, a2 * a3, a3 };
 }
 
+void prepareContact(const Body& a, const Body& b, Contact& c) {
+    for (int i = 0; i < c.count; ++i) {
+        ContactPoint& p = c.points[i];
+        const Vec3 ra = p.anchorA, rb = p.anchorB;
+        p.adjustedSeparation = p.separation - dot(rb - ra, c.normal);
+        p.normalMass = effectiveMass(a, b, ra, rb, c.normal);
+        p.tangentMass1 = effectiveMass(a, b, ra, rb, c.tangent1);
+        p.tangentMass2 = effectiveMass(a, b, ra, rb, c.tangent2);
+        p.relativeVelocity = dot(c.normal, velocityAt(b, rb) - velocityAt(a, ra));
+        p.maxNormalImpulse = 0.0f;
+    }
+}
+
+void rebaseContact(const Body& a, const Body& b, Contact& c) {
+    const float shift = dot(b.dp - a.dp, c.normal);
+    for (int i = 0; i < c.count; ++i) {
+        ContactPoint& p = c.points[i];
+        p.anchorA = a.dq.rotate(p.anchorA);
+        p.anchorB = b.dq.rotate(p.anchorB);
+        p.adjustedSeparation += shift;
+        p.normalMass = effectiveMass(a, b, p.anchorA, p.anchorB, c.normal);
+        p.tangentMass1 = effectiveMass(a, b, p.anchorA, p.anchorB, c.tangent1);
+        p.tangentMass2 = effectiveMass(a, b, p.anchorA, p.anchorB, c.tangent2);
+    }
+}
+
 void prepareContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
         Contact& c = contacts[ci];
-        const Body& a = bodies[c.bodyA];
-        const Body& b = bodies[c.bodyB];
-        for (int i = 0; i < c.count; ++i) {
-            ContactPoint& p = c.points[i];
-            const Vec3 ra = p.anchorA, rb = p.anchorB;
-            p.adjustedSeparation = p.separation - dot(rb - ra, c.normal);
-            p.normalMass = effectiveMass(a, b, ra, rb, c.normal);
-            p.tangentMass1 = effectiveMass(a, b, ra, rb, c.tangent1);
-            p.tangentMass2 = effectiveMass(a, b, ra, rb, c.tangent2);
-            p.relativeVelocity = dot(c.normal, velocityAt(b, rb) - velocityAt(a, ra));
-            p.maxNormalImpulse = 0.0f;
-        }
+        prepareContact(bodies[c.bodyA], bodies[c.bodyB], c);
     }
 }
 
