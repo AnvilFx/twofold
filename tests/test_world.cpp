@@ -175,6 +175,34 @@ TEST(crossed_edges_do_not_pass_through) {
     CHECK_NEAR(w.position(b).y, std::sqrt(2.0f), 0.02f);
 }
 
+TEST(box_across_slab_edge_does_not_sink) {
+    for (int trial = 0; trial < 40; ++trial) {
+        World w;
+        BodyDesc sd;
+        sd.type = MotionType::Static;
+        sd.rotation = Quat::axisAngle({ 0, 0, 1 }, 0.4f);
+        const BodyId slab = w.createBody(sd);
+        ShapeDesc ss;
+        ss.geometry = Box{ { 3, 0.3f, 2 } };
+        w.addShape(slab, ss);
+        const float t = (float)trial;
+        BodyDesc bd;
+        bd.position = { 0.07f * t - 1.4f, 2.0f, 1.9f + 0.009f * t };
+        bd.rotation = Quat::axisAngle(normalize(Vec3{ std::sin(t), std::cos(1.7f * t), std::sin(2.3f * t) }), 0.37f * t);
+        const BodyId b = w.createBody(bd);
+        ShapeDesc bs;
+        const Vec3 half{ 0.2f + 0.3f * std::fabs(std::sin(0.9f * t)), 0.2f + 0.3f * std::fabs(std::cos(1.3f * t)), 0.35f };
+        bs.geometry = Box{ half };
+        w.addShape(b, bs);
+        float worst = 0.0f;
+        for (int i = 0; i < 240; ++i) {
+            w.step(kDt);
+            if (i >= 30) { worst = std::fmax(worst, deepestContact(w)); }
+        }
+        CHECK(worst < 0.02f);
+    }
+}
+
 TEST(box_stack_stays_upright) {
     World w;
     addGround(w);

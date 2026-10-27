@@ -136,6 +136,15 @@ void faceContact(const WorldPoly& ref, int refFace, const WorldPoly& inc, bool f
         const float s = dot(refN, p) - refD;
         if (s <= margin) { pts.push_back({ p - refN * (0.5f * s), s, motion.predict(p, refN, s) }); }
     }
+    // Small faces of a deep pair can miss each other along the normal, leaving the deepest vertex.
+    if (pts.empty()) {
+        Vec3 deepest = inc.v[0];
+        for (const Vec3& v : inc.v) {
+            if (dot(refN, v) < dot(refN, deepest)) { deepest = v; }
+        }
+        const float s = dot(refN, deepest) - refD;
+        if (s <= margin) { pts.push_back({ deepest - refN * (0.5f * s), s, motion.predict(deepest, refN, s) }); }
+    }
     reduceManifold(pts, flip ? -refN : refN, band, m);
 }
 
@@ -172,6 +181,52 @@ void closestOnSegments(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec
     c2 = p2 + d2 * t;
 }
 
+int supportFace(const WorldPoly& p, const Vec3& n) {
+    int best = 0;
+    for (size_t i = 1; i < p.n.size(); ++i) {
+        if (dot(p.n[i], n) > dot(p.n[best], n)) { best = (int)i; }
+    }
+    return best;
+}
+
+// Clips the face of b toward a against the face of a toward b, seen along the edge axis, so an edge
+// lying across a face or another edge rests on more than one point.
+void edgeContact(const WorldPoly& a, const WorldPoly& b, const EdgeQuery& eq, float margin, float band,
+                 const Motion& motion, Manifold& m) {
+    const Vec3 n = eq.axis;
+    const int fa = supportFace(a, n);
+    const float cosA = dot(a.n[fa], n);
+    std::vector<ManifoldPoint> pts;
+    if (cosA > 0.0f) {
+        const Polyhedron::Face& fi = b.src->faces[supportFace(b, -n)];
+        std::vector<Vec3> poly;
+        for (int k = 0; k < fi.count; ++k) { poly.push_back(b.v[b.src->indices[fi.first + k]]); }
+        const Polyhedron::Face& fr = a.src->faces[fa];
+        for (int k = 0; k < fr.count; ++k) {
+            const Vec3 p = a.v[a.src->indices[fr.first + k]];
+            const Vec3 q = a.v[a.src->indices[fr.first + (k + 1) % fr.count]];
+            clipPolygon(poly, cross(q - p, n), p);
+        }
+        // No point needs a deeper push than the separating axis allows.
+        for (const Vec3& p : poly) {
+            const float s = std::fmax((dot(a.n[fa], p) - a.d[fa]) / cosA, eq.separation);
+            if (s <= margin) { pts.push_back({ p - n * (0.5f * s), s, motion.predict(p, n, s) }); }
+        }
+    }
+    if (pts.size() >= 2) {
+        reduceManifold(pts, n, band, m);
+        return;
+    }
+
+    const Polyhedron::Edge& ea = a.src->edges[eq.a];
+    const Polyhedron::Edge& eb = b.src->edges[eq.b];
+    Vec3 c1, c2;
+    closestOnSegments(a.v[ea.v0], a.v[ea.v1], b.v[eb.v0], b.v[eb.v1], c1, c2);
+    m.normal = n;
+    m.points[0] = { (c1 + c2) * 0.5f, eq.separation };
+    m.count = 1;
+}
+
 void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const Transform& xb,
                    float margin, const Tolerances& tol, const Motion& motion, Manifold& m) {
     const WorldPoly a = toWorld(sa.poly, xa);
@@ -186,13 +241,7 @@ void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const 
 
     const float absTol = 0.5f * tol.linearSlop;
     if (eq.a >= 0 && eq.separation > 0.9f * std::fmax(fa.separation, fb.separation) + absTol) {
-        const Polyhedron::Edge& ea = sa.poly.edges[eq.a];
-        const Polyhedron::Edge& eb = sb.poly.edges[eq.b];
-        Vec3 c1, c2;
-        closestOnSegments(a.v[ea.v0], a.v[ea.v1], b.v[eb.v0], b.v[eb.v1], c1, c2);
-        m.normal = eq.axis;
-        m.points[0] = { (c1 + c2) * 0.5f, eq.separation };
-        m.count = 1;
+        edgeContact(a, b, eq, margin, tol.linearSlop, motion, m);
     } else if (fb.separation > 0.98f * fa.separation + absTol) {
         faceContact(b, fb.index, a, true, margin, tol.linearSlop, motion.swapped(), m);
     } else {

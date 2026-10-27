@@ -7,6 +7,13 @@ Notes as I go, newest first. The longer reasoning behind some of this is in
 
 Viewer came up tiny on a high DPI monitor. It now scales with the monitor it opens on.
 
+A box lying across the edge of a slab slowly sank into the edge. SAT picked an edge pair
+and an edge pair only ever made one contact point, so the box pivoted on it. Edge contacts
+now clip the face of B against the face of A, seen along the edge axis, which gives two
+points when an edge lies across a face. Also, two small faces deep inside each other can
+miss each other entirely when clipped, and the pair lost its contact. The deepest vertex
+stands in for that case now.
+
 ## 2026-10-27 01:27
 
 GJK distance and conservative advancement for time of impact, for continuous collision.
