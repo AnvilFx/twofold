@@ -70,12 +70,29 @@ bool movingAwake(const Body& b) {
     return false;
 }
 
-// The point of old that a new point at localA continues, or -1.
-int matchPoint(const Contact& old, const Vec3& localA, float matchSq) {
-    for (int k = 0; k < old.count; ++k) {
-        if (lengthSquared(old.points[k].localA - localA) <= matchSq) { return k; }
+// Each new point continues the nearest old point in reach.
+// An old point continued by several new points splits its impulse between them.
+void carryImpulses(const Contact& old, Contact& c, float matchSq) {
+    int from[4], claims[4] = {};
+    for (int i = 0; i < c.count; ++i) {
+        from[i] = -1;
+        float bestSq = matchSq;
+        for (int k = 0; k < old.count; ++k) {
+            const float d = lengthSquared(old.points[k].localA - c.points[i].localA);
+            if (d <= bestSq) {
+                from[i] = k;
+                bestSq = d;
+            }
+        }
+        if (from[i] >= 0) { ++claims[from[i]]; }
     }
-    return -1;
+    for (int i = 0; i < c.count; ++i) {
+        if (from[i] < 0) { continue; }
+        const ContactPoint& o = old.points[from[i]];
+        const float share = 1.0f / (float)claims[from[i]];
+        c.points[i].normalImpulse = o.normalImpulse * share;
+        c.points[i].tangentImpulse = (o.tangentImpulse - c.normal * dot(c.normal, o.tangentImpulse)) * share;
+    }
 }
 
 int nearestPoint(const Contact& old, const Vec3& localA) {
@@ -381,12 +398,8 @@ struct World::Impl {
                 p.separation = m.points[i].separation;
                 p.anchorA = m.points[i].position - ba.com;
                 p.anchorB = m.points[i].position - bb.com;
-                const int k = hasOld ? matchPoint(*old, p.localA, matchSq) : -1;
-                if (k < 0) { continue; }
-                const ContactPoint& o = old->points[k];
-                p.normalImpulse = o.normalImpulse;
-                p.tangentImpulse = o.tangentImpulse - c.normal * dot(c.normal, o.tangentImpulse);
             }
+            if (hasOld) { carryImpulses(*old, c, matchSq); }
 
             if (ba.type == MotionType::Dynamic && !ba.awake && movingAwake(bb)) { toWake.push_back(sa.body); }
             if (bb.type == MotionType::Dynamic && !bb.awake && movingAwake(ba)) { toWake.push_back(sb.body); }
@@ -402,6 +415,30 @@ struct World::Impl {
         wakeBodies(toWake);
         profile.manifolds = (int)contacts.size();
         profile.narrowphase = millisecondsSince(narrowStart);
+    }
+
+    // Contacts of every body in a pair closing faster than limit.
+    // They get a second pass, so an impact reaches past the first contact.
+    std::vector<uint32_t> impactContacts(const std::vector<uint32_t>& active, float limit) const {
+        std::vector<uint8_t> struck(bodies.size(), 0);
+        bool any = false;
+        for (uint32_t ci : active) {
+            const Contact& c = contacts[ci];
+            for (int i = 0; i < c.count; ++i) {
+                if (c.points[i].relativeVelocity >= -limit) { continue; }
+                struck[c.bodyA] = bodies[c.bodyA].type == MotionType::Dynamic;
+                struck[c.bodyB] = bodies[c.bodyB].type == MotionType::Dynamic;
+                any = true;
+                break;
+            }
+        }
+        std::vector<uint32_t> out;
+        if (!any) { return out; }
+        for (uint32_t ci : active) {
+            const Contact& c = contacts[ci];
+            if (struck[c.bodyA] || struck[c.bodyB]) { out.push_back(ci); }
+        }
+        return out;
     }
 
     // A spinning body carries its contact points away from the overlap, so fast pairs are collided again mid-step.
@@ -449,10 +486,8 @@ struct World::Impl {
                 const ContactPoint& o = old.points[k];
                 p.relativeVelocity = o.relativeVelocity;
                 p.maxNormalImpulse = o.maxNormalImpulse;
-                if (lengthSquared(o.localA - p.localA) > matchSq) { continue; }
-                p.normalImpulse = o.normalImpulse;
-                p.tangentImpulse = o.tangentImpulse - c.normal * dot(c.normal, o.tangentImpulse);
             }
+            carryImpulses(old, c, matchSq);
         }
     }
 
@@ -710,13 +745,16 @@ struct World::Impl {
 
         const Clock::time_point solveStart = Clock::now();
         prepareContacts(bodies, contacts, active);
+        const std::vector<uint32_t> impact = impactContacts(active, ctx.restitutionThreshold);
         for (int i = 0; i < n; ++i) {
             if (i > 0 && i == n / 2 && !fast.empty()) { refreshContacts(active, fast, (float)(n - i) * h); }
             integrateVelocities(h);
             warmStart(bodies, contacts, active);
             solveContacts(bodies, contacts, active, ctx, true);
+            if (!impact.empty()) { solveContacts(bodies, contacts, impact, ctx, true); }
             integratePositions(h);
             solveContacts(bodies, contacts, active, ctx, false);
+            if (!impact.empty()) { solveContacts(bodies, contacts, impact, ctx, false); }
         }
         applyRestitution(bodies, contacts, active, ctx);
         profile.solver = millisecondsSince(solveStart);
