@@ -26,6 +26,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
 | `src/collide3d.cpp` | SAT for polyhedra, sphere and half-space pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
+| `src/distance.cpp` | GJK distance, sweeps, time of impact |
 | `src/hull.cpp` | Quickhull with a vertex limit |
 | `src/outline.cpp` | Marching squares, simplification, ear clipping, Hertel-Mehlhorn |
 | `src/shape.cpp`, `src/polyhedron.cpp` | Shape building, mass properties, bounds |
