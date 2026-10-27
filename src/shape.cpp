@@ -67,8 +67,8 @@ void buildShape(Shape& s) {
         s.extent = e;
         s.centroid = s.poly.centroid;
         s.minExtent = e;
-        for (const Polyhedron::Face& f : s.poly.faces) {
-            s.minExtent = std::min(s.minExtent, f.offset - dot(f.normal, s.centroid));
+        for (size_t i = 0; i < s.poly.faces.size(); ++i) {
+            s.minExtent = std::min(s.minExtent, s.poly.offsets[i] - dot(s.poly.normals[i], s.centroid));
         }
     }
 }

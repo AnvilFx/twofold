@@ -17,3 +17,5 @@ replaces the old one instead of editing it.
 11. [Impact contacts get a second pass](0011-impact-contacts-get-a-second-pass.md)
 12. [Old contact points share their impulse](0012-old-contact-points-share-their-impulse.md)
 13. [The relax pass takes friction in reverse](0013-relax-pass-takes-friction-in-reverse.md)
+14. [Edge queries pair edges near the overlap](0014-edge-queries-pair-edges-near-the-overlap.md)
+15. [Pairs that barely moved keep their contacts](0015-pairs-that-barely-moved-keep-their-contacts.md)

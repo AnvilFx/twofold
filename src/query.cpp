@@ -33,9 +33,8 @@ bool rayPolyhedron(const Polyhedron& poly, const Vec3& o, const Vec3& d, float m
     float lower = 0.0f, upper = maxFraction;
     int index = -1;
     for (int i = 0; i < (int)poly.faces.size(); ++i) {
-        const Polyhedron::Face& f = poly.faces[i];
-        const float num = f.offset - dot(f.normal, o);
-        const float den = dot(f.normal, d);
+        const float num = poly.offsets[i] - dot(poly.normals[i], o);
+        const float den = dot(poly.normals[i], d);
         if (den == 0.0f) {
             if (num < 0.0f) { return false; }
         } else if (den < 0.0f && num < lower * den) {
@@ -48,7 +47,7 @@ bool rayPolyhedron(const Polyhedron& poly, const Vec3& o, const Vec3& d, float m
     }
     if (index < 0) { return false; }
     fraction = lower;
-    normal = poly.faces[index].normal;
+    normal = poly.normals[index];
     return true;
 }
 

@@ -126,6 +126,7 @@ struct World::Impl {
     std::vector<Shape> shapes;
     std::vector<uint32_t> freeShapes;
     std::vector<Contact> contacts;
+    std::vector<PointAxes> axes;
     StepProfile profile;
 
     explicit Impl(const WorldSettings& s) { apply(s); }
@@ -372,49 +373,90 @@ struct World::Impl {
             const Shape& sb = shapes[ib];
             const Body& ba = bodies[sa.body];
             const Body& bb = bodies[sb.body];
-            Manifold m;
-            collidePair(sa, sb, dt, m);
-            if (m.count == 0) { continue; }
-
-            Contact c;
-            c.key = key;
-            c.shapeA = ia;
-            c.shapeB = ib;
-            c.bodyA = sa.body;
-            c.bodyB = sb.body;
-            c.normal = m.normal;
-            c.tangent1 = perpendicular(m.normal);
-            c.tangent2 = cross(m.normal, c.tangent1);
-            c.friction = frictionMix({ sa.friction, ba.type }, { sb.friction, bb.type });
-            c.restitution = restitutionMix({ sa.restitution, ba.type }, { sb.restitution, bb.type });
-            c.count = m.count;
-
             auto old = std::lower_bound(contacts.begin(), contacts.end(), key,
                                         [](const Contact& x, uint64_t k) { return x.key < k; });
             const bool hasOld = old != contacts.end() && old->key == key;
-            for (int i = 0; i < m.count; ++i) {
-                ContactPoint& p = c.points[i];
-                p.localA = ba.xf.applyInverse(m.points[i].position);
-                p.separation = m.points[i].separation;
-                p.anchorA = m.points[i].position - ba.com;
-                p.anchorB = m.points[i].position - bb.com;
+
+            Contact c;
+            if (hasOld && stillFits(*old, ba, bb)) {
+                c = *old;
+                measureAgain(ba, bb, c);
+            } else {
+                Manifold m;
+                collidePair(sa, sb, dt, m);
+                if (m.count == 0) { continue; }
+                c.key = key;
+                c.shapeA = ia;
+                c.shapeB = ib;
+                c.bodyA = sa.body;
+                c.bodyB = sb.body;
+                c.normal = m.normal;
+                c.tangent1 = perpendicular(m.normal);
+                c.tangent2 = cross(m.normal, c.tangent1);
+                c.count = m.count;
+                for (int i = 0; i < m.count; ++i) {
+                    ContactPoint& p = c.points[i];
+                    const Vec3 half = m.normal * (0.5f * m.points[i].separation);
+                    p.surfaceA = ba.xf.applyInverse(m.points[i].position - half);
+                    p.surfaceB = bb.xf.applyInverse(m.points[i].position + half);
+                    p.localA = ba.xf.applyInverse(m.points[i].position);
+                    p.separation = m.points[i].separation;
+                    p.anchorA = m.points[i].position - ba.com;
+                    p.anchorB = m.points[i].position - bb.com;
+                }
+                remember(ba, bb, c);
+                if (hasOld) { carryImpulses(*old, c, matchSq); }
             }
-            if (hasOld) { carryImpulses(*old, c, matchSq); }
+            c.friction = frictionMix({ sa.friction, ba.type }, { sb.friction, bb.type });
+            c.restitution = restitutionMix({ sa.restitution, ba.type }, { sb.restitution, bb.type });
 
             if (ba.type == MotionType::Dynamic && !ba.awake && movingAwake(bb)) { toWake.push_back(sa.body); }
             if (bb.type == MotionType::Dynamic && !bb.awake && movingAwake(ba)) { toWake.push_back(sb.body); }
             next.push_back(c);
         }
 
+        const size_t collided = next.size();
         for (const Contact& c : contacts) {
             if (movingAwake(bodies[c.bodyA]) || movingAwake(bodies[c.bodyB])) { continue; }
             next.push_back(c);
         }
-        std::sort(next.begin(), next.end(), [](const Contact& a, const Contact& b) { return a.key < b.key; });
+        std::inplace_merge(next.begin(), next.begin() + (std::ptrdiff_t)collided, next.end(),
+                           [](const Contact& a, const Contact& b) { return a.key < b.key; });
         contacts.swap(next);
         wakeBodies(toWake);
         profile.manifolds = (int)contacts.size();
         profile.narrowphase = millisecondsSince(narrowStart);
+    }
+
+    void remember(const Body& a, const Body& b, Contact& c) const {
+        c.localNormal = a.xf.q.unrotate(c.normal);
+        c.baseOffset = a.xf.q.unrotate(b.com - a.com);
+        c.baseTurn = a.xf.q.conjugate() * b.xf.q;
+        c.reusable = true;
+    }
+
+    bool stillFits(const Contact& c, const Body& a, const Body& b) const {
+        if (!c.reusable) { return false; }
+        const float reach = settings.contactReuseDistance * settings.lengthUnit;
+        if (lengthSquared(a.xf.q.unrotate(b.com - a.com) - c.baseOffset) > reach * reach) { return false; }
+        const Quat turn = a.xf.q.conjugate() * b.xf.q;
+        return std::fabs(dot(turn, c.baseTurn)) >= std::cos(0.5f * settings.contactReuseAngle);
+    }
+
+    // Kept points stay where they were on each body. The normal turns with body A.
+    void measureAgain(const Body& a, const Body& b, Contact& c) const {
+        c.normal = a.xf.q.rotate(c.localNormal);
+        c.tangent1 = perpendicular(c.normal);
+        c.tangent2 = cross(c.normal, c.tangent1);
+        for (int i = 0; i < c.count; ++i) {
+            ContactPoint& p = c.points[i];
+            const Vec3 pa = a.xf.apply(p.surfaceA), pb = b.xf.apply(p.surfaceB);
+            const Vec3 mid = (pa + pb) * 0.5f;
+            p.separation = dot(pb - pa, c.normal);
+            p.anchorA = mid - a.com;
+            p.anchorB = mid - b.com;
+            p.tangentImpulse = p.tangentImpulse - c.normal * dot(c.normal, p.tangentImpulse);
+        }
     }
 
     // Contacts of every body in a pair closing faster than limit.
@@ -445,7 +487,7 @@ struct World::Impl {
     void refreshContacts(const std::vector<uint32_t>& active, const std::vector<uint32_t>& fast, float remaining) {
         for (uint32_t ci : active) {
             Contact& c = contacts[ci];
-            rebaseContact(bodies[c.bodyA], bodies[c.bodyB], c);
+            rebaseContact(bodies[c.bodyA], bodies[c.bodyB], c, &axes[4 * ci]);
         }
         for (Body& b : bodies) {
             b.dp = Vec3{};
@@ -465,6 +507,7 @@ struct World::Impl {
                 continue;
             }
             const Contact old = c;
+            c.reusable = false;
             c.normal = m.normal;
             c.tangent1 = perpendicular(m.normal);
             c.tangent2 = cross(m.normal, c.tangent1);
@@ -477,7 +520,7 @@ struct World::Impl {
                 p.anchorA = m.points[i].position - a.com;
                 p.anchorB = m.points[i].position - b.com;
             }
-            prepareContact(a, b, c);
+            prepareContact(a, b, c, &axes[4 * ci]);
             // Restitution needs the speed the pair approached at, from the nearest point the step started with.
             for (int i = 0; i < c.count; ++i) {
                 ContactPoint& p = c.points[i];
@@ -581,9 +624,9 @@ struct World::Impl {
         if (s.kind != ShapeKind::Convex || !b.planar()) { return s.minExtent; }
         const Vec3 n = s.local.q.unrotate(b.xf.q.unrotate(b.planeNormal()));
         float inner = FLT_MAX;
-        for (const Polyhedron::Face& f : s.poly.faces) {
-            if (std::fabs(dot(f.normal, n)) > 0.9f) { continue; }
-            inner = std::fmin(inner, f.offset - dot(f.normal, s.centroid));
+        for (size_t i = 0; i < s.poly.normals.size(); ++i) {
+            if (std::fabs(dot(s.poly.normals[i], n)) > 0.9f) { continue; }
+            inner = std::fmin(inner, s.poly.offsets[i] - dot(s.poly.normals[i], s.centroid));
         }
         return inner < FLT_MAX ? inner : s.minExtent;
     }
@@ -744,19 +787,22 @@ struct World::Impl {
         ctx.restitutionThreshold = settings.restitutionThreshold * settings.lengthUnit;
 
         const Clock::time_point solveStart = Clock::now();
-        prepareContacts(bodies, contacts, active);
+        axes.resize(4 * contacts.size());
+        SolverData data{ bodies, contacts, axes };
+        prepareContacts(data, active);
         const std::vector<uint32_t> impact = impactContacts(active, ctx.restitutionThreshold);
         for (int i = 0; i < n; ++i) {
             if (i > 0 && i == n / 2 && !fast.empty()) { refreshContacts(active, fast, (float)(n - i) * h); }
             integrateVelocities(h);
-            warmStart(bodies, contacts, active);
-            solveContacts(bodies, contacts, active, ctx, true);
-            if (!impact.empty()) { solveContacts(bodies, contacts, impact, ctx, true); }
+            warmStart(data, active);
+            solveContacts(data, active, ctx, true);
+            if (!impact.empty()) { solveContacts(data, impact, ctx, true); }
             integratePositions(h);
-            solveContacts(bodies, contacts, active, ctx, false);
-            if (!impact.empty()) { solveContacts(bodies, contacts, impact, ctx, false); }
+            updateResponses(data, active);
+            solveContacts(data, active, ctx, false);
+            if (!impact.empty()) { solveContacts(data, impact, ctx, false); }
         }
-        applyRestitution(bodies, contacts, active, ctx);
+        applyRestitution(data, active, ctx);
         profile.solver = millisecondsSince(solveStart);
         profile.touchingContacts = 0;
         for (const Contact& c : contacts) {
@@ -961,6 +1007,9 @@ void World::setGeometry(ShapeId id, const Geometry& geometry) {
     if (!s) { return; }
     s->geometry = geometry;
     buildShape(*s);
+    for (Contact& c : w.contacts) {
+        if (c.shapeA == id.index || c.shapeB == id.index) { c.reusable = false; }
+    }
     w.updateMass(w.bodies[s->body]);
     w.wakeBodies({ s->body });
 }
