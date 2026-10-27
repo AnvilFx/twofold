@@ -24,3 +24,5 @@ carried over untouched.
 - Sleeping piles cost a sort and a sweep, but no narrowphase.
 - O(n log n) every step. Fine up to a few thousand shapes. A tree can replace it later
   without changing anything else.
+- Pairs that start overlapping while both bodies are still are never seen. Waking has to
+  cover that case. See [decision 10](0010-moved-anchors-wake-what-they-overlap.md).

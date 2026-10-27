@@ -801,3 +801,39 @@ TEST(sleeping_body_falls_when_its_floor_moves) {
         CHECK_NEAR(w.position(b).y, -1.5f, 0.02f);
     }
 }
+
+TEST(sleeping_body_wakes_when_a_body_is_moved_into_it) {
+    for (int mode = 0; mode < 3; ++mode) {
+        World w;
+        addBox(w, { 0, -0.5f, 0 }, { 1, 0.5f, 1 }, MotionType::Static);
+        addBox(w, { 10, 9.5f, 0 }, { 1, 0.5f, 1 }, MotionType::Static);
+        const BodyId b = addBox(w, { 0, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+        const BodyId far = addBox(w, { 10, 10.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+        const BodyId mover = mode < 2 ? addBox(w, { 5, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f }, mode ? MotionType::Kinematic : MotionType::Static)
+                                      : addGround(w);
+        if (mode == 2) { w.setTransform(mover, { 0, -5, 0 }, kUp); }
+        run(w, 3.0f);
+        CHECK(!w.isAwake(b));
+        CHECK(!w.isAwake(far));
+        if (mode < 2) {
+            w.setTransform(mover, { 0.1f, 0.5f, 0 }, {});
+        } else {
+            w.setTransform(mover, { 0, 0.4f, 0 }, kUp);
+        }
+        CHECK(w.isAwake(b));
+        CHECK(!w.isAwake(far));
+        run(w, 1.0f);
+        CHECK(deepestContact(w) < 0.01f);
+    }
+}
+
+TEST(removing_a_body_leaves_others_on_its_floor_asleep) {
+    World w;
+    addGround(w);
+    const BodyId a = addBox(w, { 0, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+    const BodyId b = addBox(w, { 5, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+    run(w, 3.0f);
+    CHECK(!w.isAwake(b));
+    w.destroyBody(a);
+    CHECK(!w.isAwake(b));
+}

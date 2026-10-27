@@ -203,10 +203,43 @@ struct World::Impl {
         contacts.erase(std::remove_if(contacts.begin(), contacts.end(), [&](const Contact& c) {
             const bool hit = shape >= 0 ? (c.shapeA == (uint32_t)shape || c.shapeB == (uint32_t)shape)
                                         : (c.bodyA == body || c.bodyB == body);
-            if (hit) { touched.push_back(c.bodyA == body ? c.bodyB : c.bodyA); }
+            const uint32_t other = c.bodyA == body ? c.bodyB : c.bodyA;
+            if (hit && bodies[other].type == MotionType::Dynamic) { touched.push_back(other); }
             return hit;
         }), contacts.end());
         wakeBodies(touched);
+    }
+
+    // Sleeping bodies an anchor was moved into have no contact with it yet.
+    void pushOverlapping(uint32_t anchor, std::vector<uint32_t>& stack) const {
+        const Vec3 grow{ tol.speculative, tol.speculative, tol.speculative };
+        for (uint32_t ai : bodies[anchor].shapes) {
+            const Shape& sa = shapes[ai];
+            const Transform xa = bodies[anchor].xf * sa.local;
+            Vec3 lo, hi;
+            shapeBounds(sa, xa, lo, hi);
+            const Vec3 n = xa.q.rotate({ 0, 0, 1 });
+            for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
+                const Body& b = bodies[bi];
+                if (!b.alive || b.type != MotionType::Dynamic || b.awake) { continue; }
+                for (uint32_t si : b.shapes) {
+                    const Shape& sb = shapes[si];
+                    if (!(sa.category & sb.mask) || !(sb.category & sa.mask)) { continue; }
+                    Vec3 blo, bhi;
+                    shapeBounds(sb, b.xf * sb.local, blo, bhi);
+                    blo -= grow;
+                    bhi += grow;
+                    if (blo.x > hi.x || lo.x > bhi.x || blo.y > hi.y || lo.y > bhi.y || blo.z > hi.z || lo.z > bhi.z) { continue; }
+                    if (sa.kind == ShapeKind::HalfSpace) {
+                        const Vec3 c = (blo + bhi) * 0.5f, e = (bhi - blo) * 0.5f;
+                        const float reach = e.x * std::fabs(n.x) + e.y * std::fabs(n.y) + e.z * std::fabs(n.z);
+                        if (dot(c - xa.p, n) > reach) { continue; }
+                    }
+                    stack.push_back(bi);
+                    break;
+                }
+            }
+        }
     }
 
     // A static or kinematic start wakes the dynamic bodies touching it, without spreading past them.
@@ -236,6 +269,7 @@ struct World::Impl {
                 const Body& o = bodies[j];
                 if (o.type == MotionType::Dynamic && !o.awake) { stack.push_back(j); }
             }
+            pushOverlapping(i, stack);
         }
         while (!stack.empty()) {
             const uint32_t i = stack.back();
