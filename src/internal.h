@@ -8,22 +8,27 @@
 namespace twofold {
 
 struct Polyhedron {
+    // A face's vertex loop in indices.
     struct Face {
-        Vec3 normal;
-        float offset = 0.0f;
         int first = 0;
         int count = 0;
     };
     struct Edge {
         int v0 = 0, v1 = 0;
         int f0 = 0, f1 = 0;
+        float length = 0.0f;
     };
 
     std::vector<Vec3> vertices;
     std::vector<int> indices;
     std::vector<Face> faces;
+    std::vector<Vec3> normals;
+    std::vector<float> offsets;
     std::vector<Edge> edges;
+    // Cross of each edge's two face normals: the edge's arc on the Gauss map.
+    std::vector<Vec3> arcs;
     Vec3 centroid;
+    Vec3 lo, hi;
 };
 
 // Faces are vertex loops, counter-clockwise seen from outside.
@@ -207,6 +212,8 @@ bool collidePlanar(const Shape& a, const Transform& xa, const Shape& b, const Tr
 void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m);
 
 struct ContactPoint {
+    // Where the point touches each shape, in its body's frame.
+    Vec3 surfaceA, surfaceB;
     Vec3 localA;
     Vec3 anchorA;
     Vec3 anchorB;
@@ -215,10 +222,21 @@ struct ContactPoint {
     float normalImpulse = 0.0f;
     Vec3 tangentImpulse;
     float maxNormalImpulse = 0.0f;
-    float normalMass = 0.0f;
-    float tangentMass1 = 0.0f;
-    float tangentMass2 = 0.0f;
     float relativeVelocity = 0.0f;
+};
+
+// One direction at a contact point: its angular Jacobians and the velocity change a unit impulse
+// along it gives each body.
+struct Axis {
+    Vec3 armA, armB;
+    Vec3 linearA, angularA;
+    Vec3 linearB, angularB;
+    float mass = 0.0f;
+};
+
+// Built once per step. Contact ci uses entries 4 * ci to 4 * ci + 3.
+struct PointAxes {
+    Axis normal, tangent1, tangent2;
 };
 
 struct Contact {
@@ -231,6 +249,11 @@ struct Contact {
     float restitution = 0.0f;
     int count = 0;
     ContactPoint points[4];
+    // The normal and the pose of body B in body A's frame when the points were collided.
+    Vec3 localNormal;
+    Vec3 baseOffset;
+    Quat baseTurn;
+    bool reusable = false;
 
     bool touching() const {
         for (int i = 0; i < count; ++i) {
@@ -257,14 +280,20 @@ struct SolverContext {
     float restitutionThreshold = 0.0f;
 };
 
-void prepareContact(const Body& a, const Body& b, Contact& c);
-void prepareContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active);
+struct SolverData {
+    std::vector<Body>& bodies;
+    std::vector<Contact>& contacts;
+    std::vector<PointAxes>& axes;
+};
+
+void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes);
+void prepareContacts(SolverData& s, const std::vector<uint32_t>& active);
 // Re-expresses anchors as the bodies' current lever arms, before their dp and dq are reset.
-void rebaseContact(const Body& a, const Body& b, Contact& c);
-void warmStart(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active);
-void solveContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active,
-                   const SolverContext& ctx, bool useBias);
-void applyRestitution(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active,
-                      const SolverContext& ctx);
+void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes);
+// Turned bodies respond to impulses through their turned inertia.
+void updateResponses(SolverData& s, const std::vector<uint32_t>& active);
+void warmStart(SolverData& s, const std::vector<uint32_t>& active);
+void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias);
+void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx);
 
 }

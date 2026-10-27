@@ -3,6 +3,51 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 15:58
+
+Speed. Rain was taking 1.2 ms a frame against Jolt's 0.14. Profiled it first: about half in
+the narrowphase, half in the solver, the broadphase barely shows.
+
+Narrowphase:
+
+- Collision runs in A's local frame now. Only B gets transformed, and with a matrix
+  instead of a quaternion per vertex.
+- Face planes and each edge's arc on the Gauss map are stored once per shape instead of
+  rebuilt for every query.
+- The face query starts with the face pointing at the other shape and tests B's deepest
+  vertex first, so most faces are ruled out with one dot product.
+- Edge queries only pair edges that reach into the overlap of the two bounds. Two rocks
+  went from 96 x 96 pairs to a handful.
+
+That last one was wrong at first. Ran old and new collision side by side on the same
+random pairs and about 1 in 1600 came back touching when the old code said apart, some
+27 mm deep. When the shapes really are apart, the edge pair that proves it can sit outside
+the overlap of the bounds. A GJK distance check now runs whenever edges were skipped, and
+the pair is dropped when the shapes are further apart than the margin. 400,000 pairs agree
+after that, except 6 at the margin that the old code kept as contacts and the new code
+doesn't, since they're actually further apart.
+
+Solver: the lever arms, the velocity change per unit impulse and the effective mass of
+every point direction are built once per step. Turned bodies need their responses updated
+after each position integration. Without that, Dominoes frames past 5 mm doubled.
+
+Then contact reuse, like Jolt's body pair cache. A pair that moved less than 0.5 mm and
+turned less than 2 degrees relative to itself since it was last collided keeps its points
+and only measures the separations again. 1 mm made the dominoes worse, 926 frames past
+5 mm against 500. 0.5 mm leaves them as they were.
+
+| Scene | Before ms | After ms | Jolt ms | Frames past 50 mm before / after |
+| --- | --- | --- | --- | --- |
+| Rain | 1.76 | 0.65 | 0.18 | 441 / 503 |
+| Hulls | 1.56 | 0.39 | 0.09 | 35 / 20 |
+| Pyramid | 0.115 | 0.070 | 0.014 | 0 / 0 |
+| Dominoes | 0.143 | 0.101 | 0.041 | 0 / 0 |
+| Cutouts | 0.74 | 0.65 | 0.14 | 0 / 0 |
+
+Rain past 100 mm went from 29 to 24, so the tail is about where it was. The rest of the
+gap to Jolt is the edge query on big shapes and the solver. Cutouts barely moved since
+its time is in the broadphase and the planar path, which this didn't touch.
+
 ## 2026-10-27 14:48
 
 A heavy box landing on a light sphere pushed the sphere 70 mm into the floor. The box hits

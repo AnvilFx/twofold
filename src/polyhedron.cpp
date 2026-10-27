@@ -9,7 +9,14 @@ Polyhedron makePolyhedron(std::vector<Vec3> vertices, const std::vector<std::vec
     Polyhedron p;
     p.vertices = std::move(vertices);
     for (const Vec3& v : p.vertices) { p.centroid += v; }
-    if (!p.vertices.empty()) { p.centroid = p.centroid / (float)p.vertices.size(); }
+    if (!p.vertices.empty()) {
+        p.centroid = p.centroid / (float)p.vertices.size();
+        p.lo = p.hi = p.vertices[0];
+    }
+    for (const Vec3& v : p.vertices) {
+        p.lo = minVec(p.lo, v);
+        p.hi = maxVec(p.hi, v);
+    }
 
     std::map<std::pair<int, int>, int> directed;
     for (const std::vector<int>& loop : faces) {
@@ -25,8 +32,8 @@ Polyhedron makePolyhedron(std::vector<Vec3> vertices, const std::vector<std::vec
             n.y += (a.z - b.z) * (a.x + b.x);
             n.z += (a.x - b.x) * (a.y + b.y);
         }
-        f.normal = normalize(n);
-        f.offset = dot(f.normal, p.vertices[loop[0]]);
+        p.normals.push_back(normalize(n));
+        p.offsets.push_back(dot(p.normals.back(), p.vertices[loop[0]]));
         const int fi = (int)p.faces.size();
         for (int i = 0; i < f.count; ++i) {
             p.indices.push_back(loop[i]);
@@ -40,7 +47,14 @@ Polyhedron makePolyhedron(std::vector<Vec3> vertices, const std::vector<std::vec
         if (a > b) { continue; }
         auto twin = directed.find({ b, a });
         if (twin == directed.end()) { continue; }
-        p.edges.push_back({ a, b, e.second, twin->second });
+        Polyhedron::Edge edge;
+        edge.v0 = a;
+        edge.v1 = b;
+        edge.f0 = e.second;
+        edge.f1 = twin->second;
+        edge.length = length(p.vertices[b] - p.vertices[a]);
+        p.edges.push_back(edge);
+        p.arcs.push_back(cross(p.normals[edge.f1], p.normals[edge.f0]));
     }
     return p;
 }

@@ -4,19 +4,38 @@ namespace twofold {
 
 namespace {
 
-Vec3 velocityAt(const Body& b, const Vec3& r) { return b.v + cross(b.w, r); }
-
-void applyImpulse(Body& b, const Vec3& p, const Vec3& r) {
-    b.v += b.invMassWorld * p;
-    b.w += b.invInertiaWorld * cross(r, p);
+Axis makeAxis(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, const Vec3& d) {
+    Axis x;
+    x.armA = cross(ra, d);
+    x.armB = cross(rb, d);
+    x.linearA = a.invMassWorld * d;
+    x.angularA = a.invInertiaWorld * x.armA;
+    x.linearB = b.invMassWorld * d;
+    x.angularB = b.invInertiaWorld * x.armB;
+    const float k = dot(d, x.linearA) + dot(d, x.linearB) + dot(x.armA, x.angularA) + dot(x.armB, x.angularB);
+    // A direction the bodies are locked against reaches k only through rounding.
+    x.mass = k > 1e-6f * (a.invMass + b.invMass) ? 1.0f / k : 0.0f;
+    return x;
 }
 
-float effectiveMass(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, const Vec3& d) {
-    const Vec3 rna = cross(ra, d), rnb = cross(rb, d);
-    const float k = dot(d, a.invMassWorld * d) + dot(d, b.invMassWorld * d)
-                  + dot(rna, a.invInertiaWorld * rna) + dot(rnb, b.invInertiaWorld * rnb);
-    // A direction the bodies are locked against reaches k only through rounding.
-    return k > 1e-6f * (a.invMass + b.invMass) ? 1.0f / k : 0.0f;
+void makeAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {
+    for (int i = 0; i < c.count; ++i) {
+        const ContactPoint& p = c.points[i];
+        axes[i].normal = makeAxis(a, b, p.anchorA, p.anchorB, c.normal);
+        axes[i].tangent1 = makeAxis(a, b, p.anchorA, p.anchorB, c.tangent1);
+        axes[i].tangent2 = makeAxis(a, b, p.anchorA, p.anchorB, c.tangent2);
+    }
+}
+
+float speedAlong(const Body& a, const Body& b, const Vec3& d, const Axis& x) {
+    return dot(d, b.v - a.v) + dot(x.armB, b.w) - dot(x.armA, a.w);
+}
+
+void push(Body& a, Body& b, const Axis& x, float impulse) {
+    a.v -= x.linearA * impulse;
+    a.w -= x.angularA * impulse;
+    b.v += x.linearB * impulse;
+    b.w += x.angularB * impulse;
 }
 
 bool anchored(const Body& b) { return b.type != MotionType::Dynamic || !b.awake; }
@@ -32,125 +51,138 @@ Softness makeSoft(float hertz, float zeta, float h) {
     return { omega / a1, a2 * a3, a3 };
 }
 
-void prepareContact(const Body& a, const Body& b, Contact& c) {
+void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
+    makeAxes(a, b, c, axes);
     for (int i = 0; i < c.count; ++i) {
         ContactPoint& p = c.points[i];
-        const Vec3 ra = p.anchorA, rb = p.anchorB;
-        p.adjustedSeparation = p.separation - dot(rb - ra, c.normal);
-        p.normalMass = effectiveMass(a, b, ra, rb, c.normal);
-        p.tangentMass1 = effectiveMass(a, b, ra, rb, c.tangent1);
-        p.tangentMass2 = effectiveMass(a, b, ra, rb, c.tangent2);
-        p.relativeVelocity = dot(c.normal, velocityAt(b, rb) - velocityAt(a, ra));
+        p.adjustedSeparation = p.separation - dot(p.anchorB - p.anchorA, c.normal);
+        p.relativeVelocity = speedAlong(a, b, c.normal, axes[i].normal);
         p.maxNormalImpulse = 0.0f;
     }
 }
 
-void rebaseContact(const Body& a, const Body& b, Contact& c) {
+void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
     const float shift = dot(b.dp - a.dp, c.normal);
     for (int i = 0; i < c.count; ++i) {
         ContactPoint& p = c.points[i];
         p.anchorA = a.dq.rotate(p.anchorA);
         p.anchorB = b.dq.rotate(p.anchorB);
         p.adjustedSeparation += shift;
-        p.normalMass = effectiveMass(a, b, p.anchorA, p.anchorB, c.normal);
-        p.tangentMass1 = effectiveMass(a, b, p.anchorA, p.anchorB, c.tangent1);
-        p.tangentMass2 = effectiveMass(a, b, p.anchorA, p.anchorB, c.tangent2);
     }
+    makeAxes(a, b, c, axes);
 }
 
-void prepareContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active) {
+void updateResponses(SolverData& s, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
-        Contact& c = contacts[ci];
-        prepareContact(bodies[c.bodyA], bodies[c.bodyB], c);
-    }
-}
-
-void warmStart(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active) {
-    for (uint32_t ci : active) {
-        Contact& c = contacts[ci];
-        Body& a = bodies[c.bodyA];
-        Body& b = bodies[c.bodyB];
+        const Contact& c = s.contacts[ci];
+        const Body& a = s.bodies[c.bodyA];
+        const Body& b = s.bodies[c.bodyB];
+        PointAxes* axes = &s.axes[4 * ci];
         for (int i = 0; i < c.count; ++i) {
-            const ContactPoint& p = c.points[i];
-            const Vec3 impulse = c.normal * p.normalImpulse + p.tangentImpulse;
-            applyImpulse(a, -impulse, p.anchorA);
-            applyImpulse(b, impulse, p.anchorB);
+            for (Axis* x : { &axes[i].normal, &axes[i].tangent1, &axes[i].tangent2 }) {
+                x->angularA = a.invInertiaWorld * x->armA;
+                x->angularB = b.invInertiaWorld * x->armB;
+            }
         }
     }
 }
 
-void solveContacts(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active,
-                   const SolverContext& ctx, bool useBias) {
+void prepareContacts(SolverData& s, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
-        Contact& c = contacts[ci];
-        Body& a = bodies[c.bodyA];
-        Body& b = bodies[c.bodyB];
+        Contact& c = s.contacts[ci];
+        prepareContact(s.bodies[c.bodyA], s.bodies[c.bodyB], c, &s.axes[4 * ci]);
+    }
+}
+
+void warmStart(SolverData& s, const std::vector<uint32_t>& active) {
+    for (uint32_t ci : active) {
+        const Contact& c = s.contacts[ci];
+        const PointAxes* axes = &s.axes[4 * ci];
+        Body& a = s.bodies[c.bodyA];
+        Body& b = s.bodies[c.bodyB];
+        for (int i = 0; i < c.count; ++i) {
+            const ContactPoint& p = c.points[i];
+            push(a, b, axes[i].normal, p.normalImpulse);
+            push(a, b, axes[i].tangent1, dot(p.tangentImpulse, c.tangent1));
+            push(a, b, axes[i].tangent2, dot(p.tangentImpulse, c.tangent2));
+        }
+    }
+}
+
+void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias) {
+    for (uint32_t ci : active) {
+        Contact& c = s.contacts[ci];
+        const PointAxes* axes = &s.axes[4 * ci];
+        Body& a = s.bodies[c.bodyA];
+        Body& b = s.bodies[c.bodyB];
         const Softness soft = (anchored(a) || anchored(b)) ? ctx.staticSoft : ctx.contactSoft;
         const Vec3 dp = b.dp - a.dp;
 
         for (int i = 0; i < c.count; ++i) {
             ContactPoint& p = c.points[i];
             const Vec3 d = dp + b.dq.rotate(p.anchorB) - a.dq.rotate(p.anchorA);
-            const float s = dot(d, c.normal) + p.adjustedSeparation;
+            const float sep = dot(d, c.normal) + p.adjustedSeparation;
 
             float bias = 0.0f, massScale = 1.0f, impulseScale = 0.0f;
-            if (s > 0.0f) {
-                bias = s * ctx.invH;
+            if (sep > 0.0f) {
+                bias = sep * ctx.invH;
             } else if (useBias) {
-                bias = std::fmax(soft.biasRate * s, -ctx.maxPushout);
+                bias = std::fmax(soft.biasRate * sep, -ctx.maxPushout);
                 massScale = soft.massScale;
                 impulseScale = soft.impulseScale;
             }
 
-            const float vn = dot(c.normal, velocityAt(b, p.anchorB) - velocityAt(a, p.anchorA));
-            float impulse = -p.normalMass * massScale * (vn + bias) - impulseScale * p.normalImpulse;
+            const Axis& x = axes[i].normal;
+            const float vn = speedAlong(a, b, c.normal, x);
+            float impulse = -x.mass * massScale * (vn + bias) - impulseScale * p.normalImpulse;
             const float total = std::fmax(p.normalImpulse + impulse, 0.0f);
             impulse = total - p.normalImpulse;
             p.normalImpulse = total;
             p.maxNormalImpulse = std::fmax(p.maxNormalImpulse, impulse);
-
-            const Vec3 pv = c.normal * impulse;
-            applyImpulse(a, -pv, p.anchorA);
-            applyImpulse(b, pv, p.anchorB);
+            push(a, b, x, impulse);
         }
 
         // The relax pass takes friction points in reverse. One fixed order keeps stacks wobbling.
         for (int j = 0; j < c.count; ++j) {
-            ContactPoint& p = c.points[useBias ? j : c.count - 1 - j];
-            const Vec3 dv = velocityAt(b, p.anchorB) - velocityAt(a, p.anchorA);
-            const Vec3 delta = c.tangent1 * (-p.tangentMass1 * dot(dv, c.tangent1))
-                             + c.tangent2 * (-p.tangentMass2 * dot(dv, c.tangent2));
-            Vec3 total = p.tangentImpulse + delta;
+            const int i = useBias ? j : c.count - 1 - j;
+            ContactPoint& p = c.points[i];
+            const Axis& x1 = axes[i].tangent1;
+            const Axis& x2 = axes[i].tangent2;
+            const float old1 = dot(p.tangentImpulse, c.tangent1), old2 = dot(p.tangentImpulse, c.tangent2);
+            float t1 = old1 - x1.mass * speedAlong(a, b, c.tangent1, x1);
+            float t2 = old2 - x2.mass * speedAlong(a, b, c.tangent2, x2);
             const float limit = c.friction * p.normalImpulse;
-            const float mag = length(total);
-            if (mag > limit) { total = mag > 0.0f ? total * (limit / mag) : Vec3{}; }
-            const Vec3 applied = total - p.tangentImpulse;
-            p.tangentImpulse = total;
-            applyImpulse(a, -applied, p.anchorA);
-            applyImpulse(b, applied, p.anchorB);
+            const float mag = std::sqrt(t1 * t1 + t2 * t2);
+            if (mag > limit) {
+                const float scale = mag > 0.0f ? limit / mag : 0.0f;
+                t1 *= scale;
+                t2 *= scale;
+            }
+            p.tangentImpulse = c.tangent1 * t1 + c.tangent2 * t2;
+            push(a, b, x1, t1 - old1);
+            push(a, b, x2, t2 - old2);
         }
     }
 }
 
-void applyRestitution(std::vector<Body>& bodies, std::vector<Contact>& contacts, const std::vector<uint32_t>& active,
-                      const SolverContext& ctx) {
+void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx) {
     for (uint32_t ci : active) {
-        Contact& c = contacts[ci];
+        Contact& c = s.contacts[ci];
         if (c.restitution == 0.0f) { continue; }
-        Body& a = bodies[c.bodyA];
-        Body& b = bodies[c.bodyB];
+        const PointAxes* axes = &s.axes[4 * ci];
+        Body& a = s.bodies[c.bodyA];
+        Body& b = s.bodies[c.bodyB];
         for (int i = 0; i < c.count; ++i) {
             ContactPoint& p = c.points[i];
             if (p.relativeVelocity > -ctx.restitutionThreshold || p.maxNormalImpulse == 0.0f) { continue; }
-            const float vn = dot(c.normal, velocityAt(b, p.anchorB) - velocityAt(a, p.anchorA));
-            float impulse = -p.normalMass * (vn + c.restitution * p.relativeVelocity);
+            const Axis& x = axes[i].normal;
+            const float vn = speedAlong(a, b, c.normal, x);
+            float impulse = -x.mass * (vn + c.restitution * p.relativeVelocity);
             const float total = std::fmax(p.normalImpulse + impulse, 0.0f);
             impulse = total - p.normalImpulse;
             p.normalImpulse = total;
             p.maxNormalImpulse = std::fmax(p.maxNormalImpulse, impulse);
-            const Vec3 pv = c.normal * impulse;
-            applyImpulse(a, -pv, p.anchorA);
-            applyImpulse(b, pv, p.anchorB);
+            push(a, b, x, impulse);
         }
     }
 }

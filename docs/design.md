@@ -78,8 +78,9 @@ with locks. See [decision 1](decisions/0001-planar-bodies-are-locked-3d-bodies.m
 
 See [decision 5](decisions/0005-cylinders-are-prisms-in-3d.md) for why cylinders are prisms.
 
-Every polyhedron keeps vertices, face loops with planes, and an edge list with the two
-faces on each edge. The edge list is what the SAT edge queries walk.
+Every polyhedron keeps vertices, face loops, face planes, its bounds, and an edge list with
+the two faces on each edge. Each edge also stores its length and its arc on the Gauss map,
+the cross of its two face normals. The edge list is what the SAT edge queries walk.
 
 `computeHull` is quickhull. It stops adding points once the hull reaches `maxVertices`,
 always taking the point farthest outside the current hull, so a limited hull keeps the
@@ -91,8 +92,9 @@ every hull has volume.
 
 `World::step(dt)` runs these in order:
 
-1. **Contacts.** Broadphase, then narrowphase for every candidate pair. New contact points
-   inherit impulses from the old ones they continue.
+1. **Contacts.** Broadphase, then narrowphase for every candidate pair. A pair that has
+   barely moved keeps its points. New contact points inherit impulses from the old ones they
+   continue.
 2. **Step state.** Every body records its pose at the start of the step, resets its motion
    since that pose (`dp`, `dq`), and refreshes its world inverse mass.
 3. **Active contacts.** Contacts with an awake dynamic body take part in the solve. Pairs
@@ -124,8 +126,13 @@ See [decision 4](decisions/0004-sort-and-sweep-rebuilt-every-step.md).
 
 ### Narrowphase in 3D
 
-- **Polyhedron pairs** use SAT: face normals of A, face normals of B, then edge pairs. Edge
-  pairs are pruned with the Gauss map test, so only pairs that form a face of the Minkowski
+- **Polyhedron pairs** use SAT in A's local frame: face normals of A, face normals of B,
+  then edge pairs. Each face query starts with the face toward the other shape and tests
+  the other shape's deepest vertex first. Only edges reaching into the overlap of the two
+  bounds are paired, and when that skips any edge a GJK distance check confirms the shapes
+  are within the margin. See
+  [decision 14](decisions/0014-edge-queries-pair-edges-near-the-overlap.md). Edge pairs are
+  pruned with the Gauss map test, so only pairs that form a face of the Minkowski
   difference are tried. Edge pairs closer to parallel than a small sine are skipped. Their
   axis is unstable and a face axis gives the same answer.
 - **Face contacts** clip the incident face against the side planes of the reference face.
@@ -178,6 +185,12 @@ of its friction impulse. When several new points continue the same old point, th
 its impulse evenly, so a manifold that changes shape doesn't push harder than before. See
 [decision 12](decisions/0012-old-contact-points-share-their-impulse.md).
 
+A pair whose bodies moved less than `contactReuseDistance` and turned less than
+`contactReuseAngle` relative to each other since it was last collided skips the
+narrowphase. It keeps its points and impulses, measures each separation again from where
+the point sits on each body, and turns its normal with body A. See
+[decision 15](decisions/0015-pairs-that-barely-moved-keep-their-contacts.md).
+
 ## Solver
 
 The solver is the soft step from Box2D v3. Contacts are springs with a stiffness in hertz
@@ -191,6 +204,11 @@ Positions are never corrected directly. Each body keeps how far it has moved sin
 start of the step (`dp`) and how far it has turned (`dq`). A contact's current separation
 is its separation at the start plus how much `dp` and `dq` have closed it. So the solver
 sees separation change between substeps without collision running again.
+
+Each point direction's lever arms, velocity change per unit impulse and effective mass are
+built once per step. The angular responses are updated after each position integration,
+so a turned body responds through its turned inertia. The effective masses stay as they
+were at the start of the step.
 
 Friction is a two-axis cone, clamped by the point's normal impulse times the mixed
 friction. The biased pass solves friction points in order, the relax pass in reverse. With

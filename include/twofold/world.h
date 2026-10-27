@@ -119,6 +119,10 @@ struct WorldSettings {
     float restitutionThreshold = 1.0f;
     float sleepThreshold = 0.05f;
     float timeToSleep = 0.5f;
+    // Two bodies that moved and turned (radians) less than these relative to each other since their last
+    // collision keep their contact points. Only the separations are measured again.
+    float contactReuseDistance = 0.0005f;
+    float contactReuseAngle = 0.035f;
     // Moves a body back to its first impact when a sudden change in speed would carry it into another shape.
     bool continuous = true;
 };

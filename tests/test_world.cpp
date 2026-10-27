@@ -827,6 +827,21 @@ TEST(sleeping_body_wakes_when_a_body_is_moved_into_it) {
     }
 }
 
+TEST(resized_shape_settles_on_its_new_size) {
+    World w;
+    addGround(w);
+    BodyDesc bd;
+    bd.position = { 0, 0.5f, 0 };
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Box{ { 0.5f, 0.5f, 0.5f } };
+    const ShapeId s = w.addShape(b, sd);
+    run(w, 1.0f);
+    w.setGeometry(s, Box{ { 0.5f, 0.25f, 0.5f } });
+    run(w, 1.0f);
+    CHECK_NEAR(w.position(b).y, 0.25f, 0.02f);
+}
+
 TEST(removing_a_body_leaves_others_on_its_floor_asleep) {
     World w;
     addGround(w);
