@@ -3,6 +3,35 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 16:16
+
+Broadphase. Sort and sweep sorted every shape every step, sleeping or not, and Cutouts spent
+a quarter of its frame on it. Replaced it with a dynamic AABB tree like Box2D's: fat leaves
+with a 100 mm margin, surface area cost on insert, rotations to keep it balanced.
+Half-spaces stay out of the tree since their bounds are infinite.
+
+First version had every awake shape query the tree every step. Faster on most scenes but
+Cutouts got slower, 0.126 to 0.16 ms. A traced cutout is dozens of small pieces, and each
+one queried even when nothing near it changed. Now the world keeps the pairs whose leaves
+overlap and only shapes whose leaf moved look for new ones.
+
+Kept the candidate test exactly as it was, so every scene and every ray hit comes out bit
+for bit the same as before. Rays sort what the tree finds by shape index so ties still go
+to the lowest. One thing the old code got for free: pairs where neither body is dynamic
+aren't kept, so a static body made dynamic has to look for its pairs again. Without that
+it sank into what it sat on until its leaf moved.
+
+| Scene | Broadphase before ms | After ms |
+| --- | --- | --- |
+| Pyramid | 0.010 | 0.002 |
+| Rain | 0.034 | 0.024 |
+| Hulls | 0.016 | 0.007 |
+| Cutouts | 0.127 | 0.097 |
+| 9,800 shapes, 40 awake | 2.46 | 0.13 |
+
+Continuous collision in Cutouts also dropped from 0.041 to 0.015 ms, since the sweeps only
+look at what's near the path now. The big scene went from 5.2 to 2.7 ms a step overall.
+
 ## 2026-10-27 15:58
 
 Speed. Rain was taking 1.2 ms a frame against Jolt's 0.14. Profiled it first: about half in

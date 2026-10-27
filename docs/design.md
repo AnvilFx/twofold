@@ -23,6 +23,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `include/twofold/outline.h` | Alpha tracing, contour simplification, convex decomposition |
 | `src/internal.h` | Internal types shared by the source files |
 | `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping, continuous collision |
+| `src/tree.h`, `src/tree.cpp` | The dynamic AABB tree behind the broadphase and queries |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
 | `src/collide3d.cpp` | SAT for polyhedra, sphere and half-space pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
@@ -115,14 +116,24 @@ every hull has volume.
 
 ### Broadphase
 
-Sort and sweep on x, rebuilt from scratch every step. Each shape's bounds grow by the
-speculative distance, and a moving body's grow by how far it can travel in the step at its
-current velocity. A pair is kept when the bounds overlap, the filters agree, at least one
-body is dynamic, and at least one is moving: awake if dynamic, or kinematic with a nonzero
-velocity. Contacts between bodies that are both still are carried over untouched, which is
-what keeps a sleeping pile cheap.
+Every shape except half-spaces has a leaf in a dynamic AABB tree. A leaf covers the
+shape's bounds grown by the speculative distance and a 100 mm margin, and moves in the
+tree only when the shape leaves it. Half-spaces are kept in a list of their own.
 
-See [decision 4](decisions/0004-sort-and-sweep-rebuilt-every-step.md).
+The world keeps the sorted pairs of shapes whose leaves overlap, on different bodies with
+at least one dynamic. Each step, shapes whose leaves moved find their new pairs, and pairs
+whose leaves no longer overlap are dropped.
+
+From those pairs and the half-spaces, a candidate goes to the narrowphase when the bounds
+overlap, the filters agree, and at least one body is moving: awake if dynamic, or
+kinematic with a nonzero velocity. Here each shape's bounds grow by the speculative
+distance, and a moving body's grow by how far it can travel in the step at its current
+velocity. Contacts between bodies that are both still are carried over untouched, which
+is what keeps a sleeping pile cheap.
+
+Ray casts, the sweeps of continuous collision and waking query the same tree.
+
+See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
 
 ### Narrowphase in 3D
 
@@ -321,8 +332,6 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
 ## Known limits
 
 - No joints, triangle meshes, shape casts, overlap queries or contact callbacks yet.
-- The broadphase rebuilds every step. It is fine for a few thousand shapes and will need a
-  tree after that.
 - A planar body on a half-space goes through the 3D path. It behaves correctly but does
   not get the exact circles of the planar path.
 - Contacts are springs, so a stack sags under its own weight. A three box tower rests

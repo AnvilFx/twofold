@@ -842,6 +842,20 @@ TEST(resized_shape_settles_on_its_new_size) {
     CHECK_NEAR(w.position(b).y, 0.25f, 0.02f);
 }
 
+TEST(static_body_made_dynamic_rests_on_the_static_body_below) {
+    World w;
+    addBox(w, { 0, -0.5f, 0 }, { 4, 0.5f, 4 }, MotionType::Static);
+    const BodyId b = addBox(w, { 0, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f }, MotionType::Static);
+    run(w, 0.5f);
+    w.setMotionType(b, MotionType::Dynamic);
+    float lowest = 1.0f;
+    for (int i = 0; i < 60; ++i) {
+        w.step(kDt);
+        lowest = std::fmin(lowest, w.position(b).y);
+    }
+    CHECK(lowest > 0.49f);
+}
+
 TEST(removing_a_body_leaves_others_on_its_floor_asleep) {
     World w;
     addGround(w);

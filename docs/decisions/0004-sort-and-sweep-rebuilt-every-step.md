@@ -2,7 +2,7 @@
 
 Date: 2026-10-26
 
-Status: Accepted
+Status: Replaced by [decision 16](0016-bounds-tree-with-persistent-pairs.md)
 
 ## Context
 
