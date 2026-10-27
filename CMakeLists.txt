@@ -14,6 +14,7 @@ add_library(twofold
     src/query.cpp
     src/shape.cpp
     src/solver.cpp
+    src/tree.cpp
     src/world.cpp
 )
 add_library(twofold::twofold ALIAS twofold)

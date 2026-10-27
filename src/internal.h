@@ -60,6 +60,10 @@ struct Shape {
     Vec3 centroid;
     // Distance from the centroid to the nearest face.
     float minExtent = 0.0f;
+
+    // Bounds at the body's current pose, and the shape's leaf in the world's tree.
+    Vec3 lo, hi;
+    int proxy = -1;
 };
 
 void buildShape(Shape& shape);
