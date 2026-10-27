@@ -185,6 +185,28 @@ TEST(tumbling_hulls_do_not_sink_into_ground) {
     CHECK(deepest < 0.005f);
 }
 
+TEST(deeply_overlapping_hulls_keep_their_contact) {
+    int missing = 0;
+    for (int i = 0; i < 400; ++i) {
+        World w;
+        w.setGravity({});
+        const float t = (float)i;
+        for (int k = 0; k < 2; ++k) {
+            BodyDesc bd;
+            bd.position = k ? normalize(Vec3{ std::sin(t), std::cos(1.7f * t), std::sin(2.3f * t) }) * 0.7f : Vec3{};
+            const Vec3 axis{ std::cos(t + (float)k), 1, std::sin((3.1f + 0.6f * (float)k) * t) };
+            bd.rotation = Quat::axisAngle(normalize(axis), (0.9f + 0.4f * (float)k) * t + (float)k);
+            const BodyId b = w.createBody(bd);
+            ShapeDesc sd;
+            sd.geometry = Hull{ spherePoints(300, 0.4f), 32 };
+            w.addShape(b, sd);
+        }
+        w.step(kDt);
+        missing += w.contacts().empty();
+    }
+    CHECK(missing == 0);
+}
+
 TEST(hulls_stack_on_each_other) {
     World w;
     addGround(w);

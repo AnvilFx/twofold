@@ -126,7 +126,11 @@ See [decision 4](decisions/0004-sort-and-sweep-rebuilt-every-step.md).
   difference are tried. Edge pairs closer to parallel than a small sine are skipped. Their
   axis is unstable and a face axis gives the same answer.
 - **Face contacts** clip the incident face against the side planes of the reference face.
-- **Edge contacts** use the closest points of the two edges as a single contact.
+  If the faces miss each other along the normal, which happens to small faces in a deep
+  overlap, the deepest vertex stands in so the pair never loses its contact.
+- **Edge contacts** clip the face of B nearest the axis against the face of A, seen along
+  the edge axis. An edge lying across a face rests on two points instead of one. When that
+  clip is empty, the closest points of the two edges make a single contact.
 - **Spheres** against polyhedra, spheres and half-spaces have their own direct tests. So do
   polyhedra against half-spaces.
 
