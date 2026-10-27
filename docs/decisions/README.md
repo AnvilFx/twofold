@@ -10,3 +10,4 @@ replaces the old one instead of editing it.
 4. [Sort and sweep, rebuilt every step](0004-sort-and-sweep-rebuilt-every-step.md)
 5. [Cylinders are prisms in 3D](0005-cylinders-are-prisms-in-3d.md)
 6. [Traced outlines become convex pieces](0006-traced-outlines-become-convex-pieces.md)
+7. [Continuous collision only past the speculative margin](0007-continuous-collision-past-the-speculative-margin.md)

@@ -390,6 +390,7 @@ struct App {
         changed |= ImGui::SliderFloat("Bounce threshold", &s.restitutionThreshold, 0.0f, 5.0f, "%.2f");
         changed |= ImGui::SliderFloat("Sleep threshold", &s.sleepThreshold, 0.0f, 0.5f, "%.3f");
         changed |= ImGui::SliderFloat("Time to sleep", &s.timeToSleep, 0.0f, 3.0f, "%.2f s");
+        changed |= ImGui::Checkbox("Continuous collision", &s.continuous);
         if (ImGui::Button("Defaults")) {
             s = WorldSettings{};
             changed = true;
@@ -443,9 +444,9 @@ struct App {
         const FrameRecord& r = session.record(session.frame());
         const StepProfile& p = r.profile;
         if (ImGui::BeginTable("phases", 2, ImGuiTableFlags_SizingStretchProp)) {
-            const char* names[] = { "Broadphase", "Narrowphase", "Solver", "Sleep", "Total" };
-            const float values[] = { p.broadphase, p.narrowphase, p.solver, p.sleep, p.total };
-            for (int i = 0; i < 5; ++i) {
+            const char* names[] = { "Broadphase", "Narrowphase", "Solver", "Continuous", "Sleep", "Total" };
+            const float values[] = { p.broadphase, p.narrowphase, p.solver, p.continuous, p.sleep, p.total };
+            for (int i = 0; i < 6; ++i) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(names[i]);
@@ -456,6 +457,7 @@ struct App {
         }
         ImGui::Text("Bodies %d   awake %d   islands %d", (int)world().bodies().size(), p.awakeBodies, p.awakeIslands);
         ImGui::Text("Pairs %d   manifolds %d   touching %d", p.candidatePairs, p.manifolds, p.touchingContacts);
+        ImGui::Text("Swept pairs %d   impacts %d", p.sweptPairs, p.impacts);
         ImGui::Separator();
         const float mm = 1000.0f / world().settings().lengthUnit;
         plot("Step time", history([](const FrameRecord& f) { return f.profile.total; }), "%.3f ms", p.total);
