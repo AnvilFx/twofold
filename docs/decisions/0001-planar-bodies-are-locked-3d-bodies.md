@@ -34,4 +34,7 @@ and contacts get an in-plane normal. Anything the 2D path can't handle falls bac
 - Mixed pairs need no special code. A planar layer against a free sphere is an ordinary 3D
   contact, and the locks keep the layer in its plane.
 - One integrator, one solver, one sleep system.
+- A planar body on the 3D path can get contact directions that point along its locked
+  axis. The locks keep it in place, but the solver has to cope with those directions. See
+  [decision 9](0009-locked-directions-have-no-effective-mass.md).
 - Layers in planes that aren't parallel use the 3D path against each other.

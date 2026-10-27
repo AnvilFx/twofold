@@ -15,7 +15,8 @@ float effectiveMass(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb
     const Vec3 rna = cross(ra, d), rnb = cross(rb, d);
     const float k = dot(d, a.invMassWorld * d) + dot(d, b.invMassWorld * d)
                   + dot(rna, a.invInertiaWorld * rna) + dot(rnb, b.invInertiaWorld * rnb);
-    return k > 0.0f ? 1.0f / k : 0.0f;
+    // A direction the bodies are locked against reaches k only through rounding.
+    return k > 1e-6f * (a.invMass + b.invMass) ? 1.0f / k : 0.0f;
 }
 
 bool anchored(const Body& b) { return b.type != MotionType::Dynamic || !b.awake; }

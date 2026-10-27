@@ -12,3 +12,4 @@ replaces the old one instead of editing it.
 6. [Traced outlines become convex pieces](0006-traced-outlines-become-convex-pieces.md)
 7. [Continuous collision only past the speculative margin](0007-continuous-collision-past-the-speculative-margin.md)
 8. [Collide fast pairs again mid-step](0008-collide-fast-pairs-again-mid-step.md)
+9. [Locked directions have no effective mass](0009-locked-directions-have-no-effective-mass.md)
