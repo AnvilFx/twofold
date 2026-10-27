@@ -3,6 +3,10 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-27 02:33
+
+Viewer came up tiny on a high DPI monitor. It now scales with the monitor it opens on.
+
 ## 2026-10-27 01:27
 
 GJK distance and conservative advancement for time of impact, for continuous collision.
