@@ -100,6 +100,7 @@ void carryImpulses(const Contact& old, Contact& c, float matchSq) {
         c.points[i].normalImpulse = o.normalImpulse * share;
         c.points[i].tangentImpulse = (o.tangentImpulse - c.normal * dot(c.normal, o.tangentImpulse)) * share;
     }
+    c.rollingImpulse = old.rollingImpulse;
 }
 
 int nearestPoint(const Contact& old, const Vec3& localA) {
@@ -618,6 +619,7 @@ struct World::Impl {
             for (size_t i = first; i < next.size(); ++i) {
                 next[i].friction = frictionMix({ sa.friction, ba.type }, { sb.friction, bb.type });
                 next[i].restitution = restitutionMix({ sa.restitution, ba.type }, { sb.restitution, bb.type });
+                next[i].rollingResistance = std::fmax(sa.rollingResistance, sb.rollingResistance);
             }
 
             if (ba.type == MotionType::Dynamic && !ba.awake && movingAwake(bb)) { toWake.push_back(sa.body); }
@@ -860,8 +862,9 @@ struct World::Impl {
 
     // Distance from the centroid to the nearest face the body can move against.
     float innerExtent(const Shape& s, const Body& b) const {
-        if (s.kind != ShapeKind::Convex || !b.planar()) { return s.minExtent; }
+        if ((s.kind != ShapeKind::Convex && s.kind != ShapeKind::Cylinder) || !b.planar()) { return s.minExtent; }
         const Vec3 n = s.local.q.unrotate(b.xf.q.unrotate(b.planeNormal()));
+        if (s.kind == ShapeKind::Cylinder) { return std::fabs(n.z) > 0.9f ? s.radius : s.minExtent; }
         float inner = FLT_MAX;
         for (size_t i = 0; i < s.poly.normals.size(); ++i) {
             if (std::fabs(dot(s.poly.normals[i], n)) > 0.9f) { continue; }
@@ -1240,6 +1243,7 @@ ShapeId World::addShape(BodyId id, const ShapeDesc& d) {
     s.density = d.density;
     s.friction = d.friction;
     s.restitution = d.restitution;
+    s.rollingResistance = d.rollingResistance;
     s.category = d.category;
     s.mask = d.mask;
     s.userData = d.userData;
@@ -1303,6 +1307,11 @@ float World::restitution(ShapeId id) const {
     return s ? s->restitution : 0.0f;
 }
 
+float World::rollingResistance(ShapeId id) const {
+    const Shape* s = impl_->get(id);
+    return s ? s->rollingResistance : 0.0f;
+}
+
 Aabb World::bounds(ShapeId id) const {
     const Shape* s = impl_->get(id);
     if (!s) { return {}; }
@@ -1332,6 +1341,10 @@ void World::setFriction(ShapeId id, float friction) {
 
 void World::setRestitution(ShapeId id, float restitution) {
     if (Shape* s = impl_->get(id)) { s->restitution = restitution; }
+}
+
+void World::setRollingResistance(ShapeId id, float rollingResistance) {
+    if (Shape* s = impl_->get(id)) { s->rollingResistance = rollingResistance; }
 }
 
 void World::setFilter(ShapeId id, uint32_t category, uint32_t mask) {
@@ -1742,6 +1755,8 @@ std::vector<ContactInfo> World::contacts(bool includeSpeculative) const {
         info.normal = c.normal;
         info.friction = c.friction;
         info.restitution = c.restitution;
+        info.rollingResistance = c.rollingResistance;
+        info.rollingImpulse = c.rollingImpulse;
         info.pointCount = c.count;
         for (int i = 0; i < c.count; ++i) {
             info.points[i] = w.bodies[c.bodyA].xf.apply(c.points[i].localA);

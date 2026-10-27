@@ -40,6 +40,36 @@ void makeAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {
 
 bool anchored(const Body& b) { return b.type != MotionType::Dynamic || !b.awake; }
 
+// One step along the relative spin, so a body locked to a plane only takes impulse about the axes it can
+// turn on. The total is then held to the rolling limit.
+void resistTurning(Body& a, Body& b, Contact& c) {
+    const Vec3 spin = b.w - a.w;
+    const float speed = length(spin);
+    Vec3 total = c.rollingImpulse;
+    if (speed > 0.0f) {
+        const Vec3 d = spin * (1.0f / speed);
+        const Vec3 ia = a.invInertiaWorld * d, ib = b.invInertiaWorld * d;
+        const float k = dot(d, ia) + dot(d, ib);
+        if (k > 0.0f) {
+            const float lambda = -speed / k;
+            total += d * lambda;
+            a.w -= ia * lambda;
+            b.w += ib * lambda;
+        }
+    }
+    float normal = 0.0f;
+    for (int i = 0; i < c.count; ++i) { normal += c.points[i].normalImpulse; }
+    const float limit = c.rollingResistance * c.rollingRadius * normal;
+    const float mag = length(total);
+    if (mag > limit) {
+        const Vec3 fix = total * (limit / mag) - total;
+        a.w -= a.invInertiaWorld * fix;
+        b.w += b.invInertiaWorld * fix;
+        total += fix;
+    }
+    c.rollingImpulse = total;
+}
+
 }
 
 Softness makeSoft(float hertz, float zeta, float h) {
@@ -58,6 +88,16 @@ void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
         p.adjustedSeparation = p.separation - dot(p.anchorB - p.anchorA, c.normal);
         p.relativeVelocity = speedAlong(a, b, c.normal, axes[i].normal);
         p.maxNormalImpulse = 0.0f;
+    }
+    if (c.rollingResistance > 0.0f && c.count > 0) {
+        float ha = 0.0f, hb = 0.0f;
+        for (int i = 0; i < c.count; ++i) {
+            ha += std::fabs(dot(c.points[i].anchorA, c.normal));
+            hb += std::fabs(dot(c.points[i].anchorB, c.normal));
+        }
+        if (a.type != MotionType::Dynamic) { ha = 0.0f; }
+        if (b.type != MotionType::Dynamic) { hb = 0.0f; }
+        c.rollingRadius = std::fmax(ha, hb) / (float)c.count;
     }
 }
 
@@ -105,6 +145,10 @@ void warmStart(SolverData& s, const std::vector<uint32_t>& active) {
             push(a, b, axes[i].normal, p.normalImpulse);
             push(a, b, axes[i].tangent1, dot(p.tangentImpulse, c.tangent1));
             push(a, b, axes[i].tangent2, dot(p.tangentImpulse, c.tangent2));
+        }
+        if (c.rollingResistance > 0.0f) {
+            a.w -= a.invInertiaWorld * c.rollingImpulse;
+            b.w += b.invInertiaWorld * c.rollingImpulse;
         }
     }
 }
@@ -162,6 +206,8 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
             push(a, b, x1, t1 - old1);
             push(a, b, x2, t2 - old2);
         }
+
+        if (c.rollingResistance > 0.0f) { resistTurning(a, b, c); }
     }
 }
 

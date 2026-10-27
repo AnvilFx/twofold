@@ -422,6 +422,366 @@ void collideSpheres(const Vec3& ca, float ra, const Vec3& cb, float rb, float ma
     m.count = 1;
 }
 
+// Rim points standing in for a cap.
+constexpr int kCapPoints = 24;
+// A polyhedron face takes part as a face when its normal is this close to the contact normal.
+constexpr float kFlatFace = 0.9998f;
+
+// A cylinder or a polyhedron in the frame of the pair.
+struct Solid {
+    bool cylinder = false;
+    Vec3 center, axis, side;
+    float radius = 0.0f, halfHeight = 0.0f;
+    FramePoly poly;
+};
+
+Solid cylinderSolid(const Shape& s, const Transform& xf) {
+    Solid c;
+    c.cylinder = true;
+    c.center = xf.p;
+    c.axis = xf.q.rotate({ 0, 0, 1 });
+    c.side = xf.q.rotate({ 1, 0, 0 });
+    c.radius = s.radius;
+    c.halfHeight = s.halfHeight;
+    return c;
+}
+
+Solid solidOf(const Shape& s, const Transform& xf, FrameStore& store) {
+    if (s.kind == ShapeKind::Cylinder) { return cylinderSolid(s, xf); }
+    Solid p;
+    p.poly = otherFrame(s.poly, xf, store);
+    return p;
+}
+
+float extentAlong(const Solid& s, const Vec3& d) {
+    if (s.cylinder) {
+        const float a = dot(s.axis, d);
+        return dot(s.center, d) + s.halfHeight * std::fabs(a) + s.radius * std::sqrt(std::fmax(1.0f - a * a, 0.0f));
+    }
+    float most = dot(s.poly.v[0], d);
+    for (int k = 1; k < s.poly.vertexCount; ++k) { most = std::fmax(most, dot(s.poly.v[k], d)); }
+    return most;
+}
+
+Vec3 supportPoint(const Solid& s, const Vec3& d) {
+    if (s.cylinder) {
+        const float a = dot(s.axis, d);
+        const Vec3 radial = d - s.axis * a;
+        const float len = length(radial);
+        const Vec3 rim = len > 1e-6f ? radial * (s.radius / len) : Vec3{};
+        return s.center + s.axis * (a < 0.0f ? -s.halfHeight : s.halfHeight) + rim;
+    }
+    int best = 0;
+    for (int k = 1; k < s.poly.vertexCount; ++k) {
+        if (dot(s.poly.v[k], d) > dot(s.poly.v[best], d)) { best = k; }
+    }
+    return s.poly.v[best];
+}
+
+// The part of a solid farthest along d: a face with its outward normal, an edge or a point. A cylinder
+// gives a cap within 45 degrees of its axis, and otherwise the line of its side.
+void featureAlong(const Solid& s, const Vec3& d, float band, std::vector<Vec3>& out, Vec3& normal) {
+    out.clear();
+    if (s.cylinder) {
+        const float a = dot(s.axis, d);
+        const Vec3 radial = d - s.axis * a;
+        const float len = length(radial);
+        if (std::fabs(a) > len) {
+            normal = a < 0.0f ? -s.axis : s.axis;
+            // A tilted cap starts at its deepest point, so that point is exact. A level one keeps the same
+            // points as it turns, so its contacts carry over between steps.
+            const Vec3 u = 2.0f * s.radius * len > band ? radial / len : s.side;
+            const Vec3 v = cross(normal, u);
+            const Vec3 c = s.center + normal * s.halfHeight;
+            for (int k = 0; k < kCapPoints; ++k) {
+                const float t = 2.0f * 3.14159265358979f * (float)k / (float)kCapPoints;
+                out.push_back(c + (u * std::cos(t) + v * std::sin(t)) * s.radius);
+            }
+        } else {
+            const Vec3 p = s.center + radial * (s.radius / len);
+            out.push_back(p - s.axis * s.halfHeight);
+            out.push_back(p + s.axis * s.halfHeight);
+        }
+        return;
+    }
+    const FramePoly& p = s.poly;
+    const int f = supportFace(p, d);
+    if (dot(p.n[f], d) >= kFlatFace) {
+        normal = p.n[f];
+        const Polyhedron::Face& face = p.src->faces[f];
+        for (int k = 0; k < face.count; ++k) { out.push_back(p.v[p.src->indices[face.first + k]]); }
+        return;
+    }
+    int first = 0, second = -1;
+    for (int k = 1; k < p.vertexCount; ++k) {
+        if (dot(p.v[k], d) > dot(p.v[first], d)) {
+            second = first;
+            first = k;
+        } else if (second < 0 || dot(p.v[k], d) > dot(p.v[second], d)) {
+            second = k;
+        }
+    }
+    out.push_back(p.v[first]);
+    if (second >= 0 && dot(p.v[second], d) >= dot(p.v[first], d) - band) { out.push_back(p.v[second]); }
+}
+
+struct Separation {
+    Vec3 normal;
+    float gap = -FLT_MAX;
+};
+
+void tryAxis(const Solid& a, const Solid& b, const Vec3& d, Separation& best) {
+    const float len = length(d);
+    if (len < 1e-6f) { return; }
+    const Vec3 n = d / len;
+    const float gap = -extentAlong(a, n) - extentAlong(b, -n);
+    if (gap > best.gap) {
+        best.normal = n;
+        best.gap = gap;
+    }
+}
+
+// No direction separates the solids by more than they are apart, so the best direction along which a flat
+// or straight pair of features can touch is exact whenever such a pair touches.
+Separation featureAxes(const Solid& a, const Solid& b) {
+    Separation best;
+    for (int i = 0; !a.cylinder && i < a.poly.faceCount; ++i) { tryAxis(a, b, a.poly.n[i], best); }
+    for (int i = 0; !b.cylinder && i < b.poly.faceCount; ++i) { tryAxis(a, b, -b.poly.n[i], best); }
+    for (const Solid* c : { &a, &b }) {
+        if (!c->cylinder) { continue; }
+        tryAxis(a, b, c->axis, best);
+        tryAxis(a, b, -c->axis, best);
+    }
+    if (a.cylinder && b.cylinder) {
+        const Vec3 c = cross(a.axis, b.axis);
+        if (length(c) > kParallelEdges) {
+            tryAxis(a, b, c, best);
+            tryAxis(a, b, -c, best);
+        } else {
+            const Vec3 d = b.center - a.center;
+            tryAxis(a, b, d - a.axis * dot(d, a.axis), best);
+        }
+        return best;
+    }
+    const Solid& cyl = a.cylinder ? a : b;
+    const FramePoly& p = a.cylinder ? b.poly : a.poly;
+    for (const Polyhedron::Edge& e : p.src->edges) {
+        const Vec3 edge = p.v[e.v1] - p.v[e.v0];
+        Vec3 c = cross(edge, cyl.axis);
+        if (length(c) <= kParallelEdges * e.length) {
+            const Vec3 d = p.v[e.v0] - cyl.center;
+            c = d - cyl.axis * dot(d, cyl.axis);
+        }
+        tryAxis(a, b, c, best);
+        tryAxis(a, b, -c, best);
+    }
+    return best;
+}
+
+// GJK directions between the shapes and between their cores, cylinders shrunk into a rounded core. Near
+// touching, the first is poorly placed and the second takes over.
+int distanceAxes(Convex ca, const Transform& xa, Convex cb, const Transform& xb, const Tolerances& tol, Vec3 n[2]) {
+    int count = 0;
+    const DistanceResult r = distance(ca, xa, cb, xb);
+    if (r.distance > 0.0f) { n[count++] = r.normal; }
+    if (r.distance > tol.linearSlop) { return count; }
+    float shrunk = 0.0f;
+    for (Convex* c : { &ca, &cb }) {
+        if (!c->cylinder) { continue; }
+        const float core = 0.25f * std::fmin(c->rim, c->halfHeight);
+        c->rim -= core;
+        c->halfHeight -= core;
+        c->radius += core;
+        shrunk += core;
+    }
+    const DistanceResult core = distance(ca, xa, cb, xb);
+    if (core.distance + shrunk > 0.0f) { n[count++] = core.normal; }
+    return count;
+}
+
+// False when the solids are further apart than margin. A GJK direction only wins where no flat or straight
+// feature pair comes close, such as a rim on an edge.
+bool separate(const Solid& a, const Solid& b, const Convex& ca, const Transform& xa, const Convex& cb,
+              const Transform& xb, const Quat& toFrame, float margin, const Tolerances& tol, Separation& best) {
+    best = featureAxes(a, b);
+    if (best.gap > margin) { return false; }
+    Vec3 n[2];
+    const int count = distanceAxes(ca, xa, cb, xb, tol, n);
+    Separation curved;
+    for (int i = 0; i < count; ++i) { tryAxis(a, b, toFrame.unrotate(n[i]), curved); }
+    if (curved.gap > best.gap + 0.1f * tol.linearSlop) { best = curved; }
+    return best.gap <= margin;
+}
+
+void clipSegment(std::vector<Vec3>& seg, const Vec3& n, const Vec3& origin) {
+    const float dp = dot(n, seg[0] - origin), dq = dot(n, seg[1] - origin);
+    if (dp > 0.0f && dq > 0.0f) {
+        seg.clear();
+    } else if (dp > 0.0f) {
+        seg[0] = seg[0] + (seg[1] - seg[0]) * (dp / (dp - dq));
+    } else if (dq > 0.0f) {
+        seg[1] = seg[1] + (seg[0] - seg[1]) * (dq / (dq - dp));
+    }
+}
+
+struct RoundBuffers {
+    FrameStore frame;
+    std::vector<Vec3> fa, fb, turn;
+    ClipBuffers clip;
+};
+
+// The side lines one cap point either side of the one along d. A spinning cylinder brings them into
+// contact within a step.
+void turnLines(const Solid& s, const Vec3& d, std::vector<Vec3>& out) {
+    out.clear();
+    const Vec3 radial = normalize(d - s.axis * dot(s.axis, d));
+    const Vec3 across = cross(s.axis, radial);
+    const float t = 2.0f * 3.14159265358979f / (float)kCapPoints;
+    for (float sign : { -1.0f, 1.0f }) {
+        const Vec3 p = s.center + (radial * std::cos(t) + across * (sign * std::sin(t))) * s.radius;
+        out.push_back(p - s.axis * s.halfHeight);
+        out.push_back(p + s.axis * s.halfHeight);
+    }
+}
+
+// Contacts of solids that separate by gap along n, from a to b. Whichever feature is a face clips the
+// other, and a face pair is clipped by the face that best faces along n.
+void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, const Transform& xf, float margin,
+                  float band, const Motion& motion, RoundBuffers& buf, Manifold& m) {
+    Vec3 na, nb;
+    featureAlong(a, n, band, buf.fa, na);
+    featureAlong(b, -n, band, buf.fb, nb);
+    const Vec3 worldN = xf.q.rotate(n);
+    std::vector<ManifoldPoint>& pts = buf.clip.points;
+    pts.clear();
+    // No point needs a deeper push than the separating direction allows.
+    auto add = [&](const Vec3& onA, const Vec3& onB, float s) {
+        s = std::fmax(s, gap);
+        if (s > margin) { return; }
+        const Vec3 w = xf.apply((onA + onB) * 0.5f);
+        pts.push_back({ w, s, motion.predict(w, worldN, s) });
+    };
+
+    const bool faceA = buf.fa.size() >= 3, faceB = buf.fb.size() >= 3;
+    const bool refA = faceA && (!faceB || dot(na, n) >= -dot(nb, n));
+    auto clipToFace = [&](const std::vector<Vec3>& feature) {
+        const std::vector<Vec3>& ref = refA ? buf.fa : buf.fb;
+        const Vec3 refN = refA ? na : nb;
+        const Vec3 out = refA ? n : -n;
+        const float facing = dot(refN, out);
+        std::vector<Vec3>& inc = buf.clip.poly;
+        inc = feature;
+        for (size_t k = 0; k < ref.size() && !inc.empty(); ++k) {
+            const Vec3 side = cross(ref[(k + 1) % ref.size()] - ref[k], refN);
+            if (inc.size() >= 3) {
+                clipPolygon(inc, buf.clip.scratch, side, ref[k]);
+            } else if (inc.size() == 2) {
+                clipSegment(inc, side, ref[k]);
+            } else if (dot(side, inc[0] - ref[k]) > 0.0f) {
+                inc.clear();
+            }
+        }
+        for (const Vec3& q : inc) {
+            const float s = dot(refN, q - ref[0]) / facing;
+            const Vec3 onRef = q - out * s;
+            if (refA) {
+                add(onRef, q, s);
+            } else {
+                add(q, onRef, s);
+            }
+        }
+    };
+    // Lines closer to parallel than kParallelEdges touch along their overlap, others at their closest points.
+    auto linePair = [&](const Vec3& a0, const Vec3& a1, const Vec3& b0, const Vec3& b1) {
+        const Vec3 da = a1 - a0, db = b1 - b0;
+        const float la = dot(da, da), lb = dot(db, db);
+        if (la > 0.0f && lb > 0.0f && length(cross(da, db)) <= kParallelEdges * std::sqrt(la * lb)) {
+            const float t0 = dot(b0 - a0, da) / la, t1 = dot(b1 - a0, da) / la;
+            const float lo = std::fmax(std::fmin(t0, t1), 0.0f), hi = std::fmin(std::fmax(t0, t1), 1.0f);
+            if (lo <= hi) {
+                for (float t : { lo, hi }) {
+                    const Vec3 onA = a0 + da * t;
+                    const Vec3 onB = b0 + db * std::fmin(std::fmax(dot(onA - b0, db) / lb, 0.0f), 1.0f);
+                    add(onA, onB, dot(onB - onA, n));
+                }
+                return;
+            }
+        }
+        Vec3 onA, onB;
+        closestOnSegments(a0, a1, b0, b1, onA, onB);
+        add(onA, onB, dot(onB - onA, n));
+    };
+
+    const Solid& incident = refA ? b : a;
+    const std::vector<Vec3>& incFeature = refA ? buf.fb : buf.fa;
+    if (faceA || faceB) {
+        clipToFace(incFeature);
+    } else if (buf.fa.size() == 2 && buf.fb.size() == 2) {
+        linePair(buf.fa[0], buf.fa[1], buf.fb[0], buf.fb[1]);
+    }
+    if (pts.empty()) {
+        const Vec3 onB = buf.fa.size() == 1 && buf.fb.size() != 1 ? buf.fa[0] + n * gap : supportPoint(b, -n);
+        add(onB - n * gap, onB, gap);
+    }
+    if ((faceA || faceB) && incident.cylinder && incFeature.size() == 2) {
+        turnLines(incident, refA ? -n : n, buf.turn);
+        for (int k = 0; k < 2; ++k) { clipToFace({ buf.turn[2 * k], buf.turn[2 * k + 1] }); }
+    } else if (!faceA && !faceB && buf.fa.size() == 2 && buf.fb.size() == 2) {
+        if (a.cylinder) {
+            turnLines(a, n, buf.turn);
+            for (int k = 0; k < 2; ++k) { linePair(buf.turn[2 * k], buf.turn[2 * k + 1], buf.fb[0], buf.fb[1]); }
+        }
+        if (b.cylinder) {
+            turnLines(b, -n, buf.turn);
+            for (int k = 0; k < 2; ++k) { linePair(buf.fa[0], buf.fa[1], buf.turn[2 * k], buf.turn[2 * k + 1]); }
+        }
+    }
+    reduceManifold(pts, worldN, band, m, 0.5f * band);
+}
+
+// Collides two shapes in the world frame, at least one of them a cylinder.
+void collideRound(const Shape& sa, const Transform& xa, const Shape& sb, const Transform& xb, float margin,
+                  const Tolerances& tol, const Motion& motion, Manifold& m) {
+    thread_local RoundBuffers buf;
+    const Solid a = solidOf(sa, xa, buf.frame);
+    const Solid b = solidOf(sb, xb, buf.frame);
+    Separation best;
+    if (!separate(a, b, convexOf(sa), xa, convexOf(sb), xb, Quat{}, margin, tol, best)) { return; }
+    solidContact(a, b, best.normal, best.gap, Transform{}, margin, tol.linearSlop, motion, buf, m);
+}
+
+// Normal points from the cylinder to the sphere.
+void collideSphereCylinder(const Shape& cyl, const Transform& xc, const Vec3& center, float r, float margin,
+                           Manifold& m) {
+    const Vec3 c = xc.applyInverse(center);
+    const float rho = std::sqrt(c.x * c.x + c.y * c.y);
+    Vec3 n, surface;
+    float sep;
+    if (rho <= cyl.radius && std::fabs(c.z) <= cyl.halfHeight) {
+        const float side = cyl.radius - rho, cap = cyl.halfHeight - std::fabs(c.z);
+        if (side < cap) {
+            n = rho > 0.0f ? Vec3{ c.x / rho, c.y / rho, 0.0f } : Vec3{ 1, 0, 0 };
+            surface = c + n * side;
+            sep = -side - r;
+        } else {
+            n = { 0.0f, 0.0f, c.z < 0.0f ? -1.0f : 1.0f };
+            surface = c + n * cap;
+            sep = -cap - r;
+        }
+    } else {
+        const float scale = rho > cyl.radius ? cyl.radius / rho : 1.0f;
+        surface = { c.x * scale, c.y * scale, std::fmin(std::fmax(c.z, -cyl.halfHeight), cyl.halfHeight) };
+        const float dist = length(c - surface);
+        if (dist <= 0.0f) { return; }
+        n = (c - surface) / dist;
+        sep = dist - r;
+    }
+    if (sep > margin) { return; }
+    m.normal = xc.q.rotate(n);
+    m.points[0] = { xc.apply((surface + c - n * r) * 0.5f), sep };
+    m.count = 1;
+}
+
 // Normal points out of the half-space.
 void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& xo, float margin, float band,
                       const Motion& motion, Manifold& m) {
@@ -438,6 +798,18 @@ void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& 
     }
     thread_local std::vector<ManifoldPoint> pts;
     pts.clear();
+    if (other.kind == ShapeKind::Cylinder) {
+        thread_local std::vector<Vec3> feature;
+        Vec3 unused;
+        featureAlong(cylinderSolid(other, xo), -n, band, feature, unused);
+        for (const Vec3& w : feature) {
+            const float s = dot(n, w) - offset;
+            if (s > margin) { continue; }
+            pts.push_back({ w - n * (0.5f * s), s, motion.predict(w, n, s) });
+        }
+        reduceManifold(pts, n, band, m, 0.5f * band);
+        return;
+    }
     const Vec3 localN = xo.q.unrotate(n);
     const float localOffset = offset - dot(n, xo.p);
     for (const Vec3& v : other.poly.vertices) {
@@ -580,6 +952,7 @@ struct MeshBuffers {
     FrameStore frame;
     std::vector<int> near;
     ClipBuffers clip;
+    RoundBuffers round;
     std::vector<Manifold> found;
     std::vector<std::vector<ManifoldPoint>> groups;
 };
@@ -588,7 +961,7 @@ struct MeshBuffers {
 
 // Ranks points by predicted separation. Spread is chosen among points within band of the deepest,
 // then free slots take the deepest of the rest.
-void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float band, Manifold& m) {
+void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float band, Manifold& m, float tie) {
     m.normal = normal;
     m.count = 0;
     if (pts.size() <= 4) {
@@ -599,6 +972,12 @@ void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float b
     size_t i0 = 0;
     for (size_t i = 1; i < pts.size(); ++i) {
         if (pts[i].predicted < pts[i0].predicted) { i0 = i; }
+    }
+    for (size_t i = 0; i < i0; ++i) {
+        if (pts[i].predicted <= pts[i0].predicted + tie) {
+            i0 = i;
+            break;
+        }
     }
     const Vec3 p0 = pts[i0].position;
     const float limit = pts[i0].predicted + band;
@@ -665,7 +1044,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
                  const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out) {
     out.clear();
     const TriangleMesh::Data* d = meshOf(mesh);
-    if (!d || (other.kind != ShapeKind::Sphere && other.kind != ShapeKind::Convex)) { return; }
+    if (!d || other.kind == ShapeKind::HalfSpace || other.kind == ShapeKind::Mesh) { return; }
     thread_local MeshBuffers buf;
     buf.found.clear();
     const Transform rel{ xm.q.unrotate(xo.p - xm.p), xm.q.conjugate() * xo.q };
@@ -703,6 +1082,48 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             const Vec3 w = xm.apply((surface + center - normal * r) * 0.5f);
             m.points[0] = { w, sep, motion.predict(w, m.normal, sep) };
             m.count = 1;
+            buf.found.push_back(m);
+        });
+    } else if (other.kind == ShapeKind::Cylinder) {
+        const Solid b = cylinderSolid(other, rel);
+        const Vec3 reach = cylinderReach(b.axis, b.radius, b.halfHeight) + Vec3{ margin, margin, margin };
+        const Convex convexB = convexOf(other);
+        d->query(b.center - reach, b.center + reach, [&](int t) {
+            Vec3 c[3];
+            d->corners(t, c);
+            const Vec3 n = d->normals[t];
+            buf.tri.set(c, n);
+            Solid a;
+            a.poly = ownFrame(buf.tri.poly);
+            const Convex triangle{ buf.tri.poly.vertices.data(), 3, 0.0f, false };
+            Separation best;
+            if (!separate(a, b, triangle, xm, convexB, xo, xm.q, margin, tol, best)) { return; }
+            Manifold m;
+            solidContact(a, b, best.normal, best.gap, xm, margin, tol.linearSlop, motion, buf.round, m);
+            if (m.count == 0) { return; }
+
+            // An edge or corner without a normal of its own leaves the push to the face.
+            if (std::fabs(dot(best.normal, n)) < 0.9999f) {
+                int deepest = 0;
+                for (int i = 1; i < m.count; ++i) {
+                    if (m.points[i].separation < m.points[deepest].separation) { deepest = i; }
+                }
+                int feature;
+                closestOnTriangle(c, xm.applyInverse(m.points[deepest].position), feature);
+                Separation front, back;
+                tryAxis(a, b, n, front);
+                tryAxis(a, b, -n, back);
+                const int side = front.gap >= back.gap ? 0 : 1;
+                if (!ownNormal(d->edges[t], feature, side)) {
+                    const Separation& face = side == 0 ? front : back;
+                    m.count = 0;
+                    solidContact(a, b, face.normal, face.gap, xm, margin, tol.linearSlop, motion, buf.round, m);
+                    for (int k = 0; k < m.count; ++k) {
+                        if (m.points[k].separation < best.gap - tol.linearSlop) { return; }
+                    }
+                    if (m.count == 0) { return; }
+                }
+            }
             buf.found.push_back(m);
         });
     } else {
@@ -809,10 +1230,20 @@ void collide(const Shape& a, const Transform& xa, const Shape& b, const Transfor
     } else if (ka == ShapeKind::Sphere && kb == ShapeKind::Sphere) {
         collideSpheres(xa.p, a.radius, xb.p, b.radius, margin, m);
     } else if (ka == ShapeKind::Sphere) {
-        collideSpherePoly(b, xb, xa.p, a.radius, margin, m);
+        if (kb == ShapeKind::Cylinder) {
+            collideSphereCylinder(b, xb, xa.p, a.radius, margin, m);
+        } else {
+            collideSpherePoly(b, xb, xa.p, a.radius, margin, m);
+        }
         m.normal = -m.normal;
     } else if (kb == ShapeKind::Sphere) {
-        collideSpherePoly(a, xa, xb.p, b.radius, margin, m);
+        if (ka == ShapeKind::Cylinder) {
+            collideSphereCylinder(a, xa, xb.p, b.radius, margin, m);
+        } else {
+            collideSpherePoly(a, xa, xb.p, b.radius, margin, m);
+        }
+    } else if (ka == ShapeKind::Cylinder || kb == ShapeKind::Cylinder) {
+        collideRound(a, xa, b, xb, margin, tol, motion, m);
     } else {
         collideConvex(a, xa, b, xb, margin, tol, motion, m);
     }

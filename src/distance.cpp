@@ -23,6 +23,7 @@ struct Simplex {
 
 Vec3 support(const Convex& c, const Transform& xf, const Vec3& d) {
     const Vec3 local = xf.q.unrotate(d);
+    if (c.cylinder) { return xf.apply(cylinderSupport(c.rim, c.halfHeight, local)); }
     int best = 0;
     float most = dot(c.points[0], local);
     for (int i = 1; i < c.count; ++i) {
@@ -100,14 +101,17 @@ void triangleWeights(const Vec3& a, const Vec3& b, const Vec3& c, float u[3]) {
     }
 }
 
-// False when the origin lies inside the tetrahedron.
+// False when the origin lies inside the tetrahedron. A face too flat to tell its inside from rounding is
+// treated as facing the origin.
 bool tetrahedronWeights(const Vec3 w[4], float u[4]) {
     static const int faces[4][4] = { { 0, 1, 2, 3 }, { 0, 3, 1, 2 }, { 0, 2, 3, 1 }, { 1, 3, 2, 0 } };
     bool outside = false;
     float best = FLT_MAX;
     for (const int* f : faces) {
         const Vec3 n = cross(w[f[1]] - w[f[0]], w[f[2]] - w[f[0]]);
-        if (-dot(w[f[0]], n) * dot(w[f[3]] - w[f[0]], n) > 0.0f) { continue; }
+        const Vec3 apex = w[f[3]] - w[f[0]];
+        const float height = dot(apex, n);
+        if (-dot(w[f[0]], n) * height > 0.0f && height * height > 1e-8f * dot(n, n) * dot(apex, apex)) { continue; }
         outside = true;
         float t[3];
         triangleWeights(w[f[0]], w[f[1]], w[f[2]], t);
@@ -171,6 +175,10 @@ Convex convexOf(const Shape& s) {
         c.points = &s.centroid;
         c.count = 1;
         c.radius = s.radius;
+    } else if (s.kind == ShapeKind::Cylinder) {
+        c.cylinder = true;
+        c.rim = s.radius;
+        c.halfHeight = s.halfHeight;
     } else {
         c.points = s.poly.vertices.data();
         c.count = (int)s.poly.vertices.size();
@@ -189,8 +197,8 @@ DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, c
     }
 
     Simplex s;
-    s.v[0].a = xa.apply(a.points[0]);
-    s.v[0].b = xb.apply(b.points[0]);
+    s.v[0].a = a.cylinder ? xa.apply({ a.rim, 0.0f, a.halfHeight }) : xa.apply(a.points[0]);
+    s.v[0].b = b.cylinder ? xb.apply({ b.rim, 0.0f, b.halfHeight }) : xb.apply(b.points[0]);
     s.v[0].w = s.v[0].b - s.v[0].a;
     s.u[0] = 1.0f;
     s.count = 1;
