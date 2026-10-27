@@ -27,6 +27,8 @@ is tested by AnvilFx before it ships.
 - Per-axis translation and rotation locks in any frame, including planar bodies
 - Substepped soft contact solver with friction, restitution and warm starting
 - Speculative contacts for fast bodies
+- Continuous collision for bodies knocked or pushed through thin shapes within a single
+  step, against static, kinematic and dynamic bodies
 - Sleeping islands, and bodies created asleep until touched
 - Collision filtering by category and mask
 - Ray casts against every shape type

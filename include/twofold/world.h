@@ -119,6 +119,8 @@ struct WorldSettings {
     float restitutionThreshold = 1.0f;
     float sleepThreshold = 0.05f;
     float timeToSleep = 0.5f;
+    // Moves a body back to its first impact when a sudden change in speed would carry it into another shape.
+    bool continuous = true;
 };
 
 struct MaterialInput {
@@ -163,8 +165,11 @@ struct StepProfile {
     float broadphase = 0.0f;
     float narrowphase = 0.0f;
     float solver = 0.0f;
+    float continuous = 0.0f;
     float sleep = 0.0f;
     int candidatePairs = 0;
+    int sweptPairs = 0;
+    int impacts = 0;
     int manifolds = 0;
     int touchingContacts = 0;
     int awakeBodies = 0;

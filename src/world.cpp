@@ -428,6 +428,136 @@ struct World::Impl {
         }
     }
 
+    float reach(const Shape& s, const Body& b) const { return length(s.local.p - b.localCenter) + s.extent; }
+
+    // Distance from the centroid to the nearest face the body can move against.
+    float innerExtent(const Shape& s, const Body& b) const {
+        if (s.kind != ShapeKind::Convex || !b.planar()) { return s.minExtent; }
+        const Vec3 n = s.local.q.unrotate(b.xf.q.unrotate(b.planeNormal()));
+        float inner = FLT_MAX;
+        for (const Polyhedron::Face& f : s.poly.faces) {
+            if (std::fabs(dot(f.normal, n)) > 0.9f) { continue; }
+            inner = std::fmin(inner, f.offset - dot(f.normal, s.centroid));
+        }
+        return inner < FLT_MAX ? inner : s.minExtent;
+    }
+
+    // Speculative contacts cover motion at the velocities the step started with. A shape that moved well
+    // past that sweeps against everything near its path. Only a sweep that brings the shape's core into
+    // the other shape moves the body back, to where the whole shape first touched it.
+    void solveContinuous() {
+        profile.sweptPairs = 0;
+        profile.impacts = 0;
+        if (!settings.continuous) { return; }
+
+        std::vector<Sweep> sweeps(bodies.size());
+        std::vector<uint8_t> fast(shapes.size(), 0);
+        bool any = false;
+        for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
+            const Body& b = bodies[bi];
+            if (!b.alive) { continue; }
+            sweeps[bi] = makeSweep(b.localCenter, b.com0, b.q0, b.com, b.xf.q);
+            if (b.type != MotionType::Dynamic || !b.awake) { continue; }
+            const float moved = length(b.com - b.com0);
+            for (uint32_t si : b.shapes) {
+                const Shape& s = shapes[si];
+                if (moved + sweeps[bi].angle * reach(s, b) > b.expectedTravel + 0.5f * innerExtent(s, b)) {
+                    fast[si] = 1;
+                    any = true;
+                }
+            }
+        }
+        if (!any) { return; }
+
+        std::vector<Proxy> proxies;
+        for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
+            const Body& b = bodies[bi];
+            if (!b.alive) { continue; }
+            for (uint32_t si : b.shapes) {
+                Proxy p;
+                p.shape = si;
+                shapeBounds(shapes[si], b.xf * shapes[si].local, p.lo, p.hi);
+                if (b.type != MotionType::Static) {
+                    Vec3 lo, hi;
+                    shapeBounds(shapes[si], sweeps[bi].at(0.0f) * shapes[si].local, lo, hi);
+                    p.lo = minVec(p.lo, lo);
+                    p.hi = maxVec(p.hi, hi);
+                }
+                proxies.push_back(p);
+            }
+        }
+        std::sort(proxies.begin(), proxies.end(), [](const Proxy& a, const Proxy& b) {
+            return a.lo.x < b.lo.x || (a.lo.x == b.lo.x && a.shape < b.shape);
+        });
+
+        std::vector<std::pair<uint32_t, uint32_t>> pairs;
+        for (size_t i = 0; i < proxies.size(); ++i) {
+            const Proxy& pa = proxies[i];
+            for (size_t j = i + 1; j < proxies.size() && proxies[j].lo.x <= pa.hi.x; ++j) {
+                const Proxy& pb = proxies[j];
+                if (!fast[pa.shape] && !fast[pb.shape]) { continue; }
+                if (pa.lo.y > pb.hi.y || pb.lo.y > pa.hi.y || pa.lo.z > pb.hi.z || pb.lo.z > pa.hi.z) { continue; }
+                const Shape& sa = shapes[pa.shape];
+                const Shape& sb = shapes[pb.shape];
+                if (sa.body == sb.body) { continue; }
+                if (!(sa.category & sb.mask) || !(sb.category & sa.mask)) { continue; }
+                if (fast[pa.shape]) { pairs.push_back({ pa.shape, pb.shape }); }
+                if (fast[pb.shape]) { pairs.push_back({ pb.shape, pa.shape }); }
+            }
+        }
+        profile.sweptPairs = (int)pairs.size();
+
+        std::vector<float> fraction(bodies.size(), 1.0f);
+        std::vector<uint32_t> group(bodies.size());
+        for (uint32_t i = 0; i < group.size(); ++i) { group[i] = i; }
+        auto find = [&](uint32_t x) {
+            while (group[x] != x) {
+                group[x] = group[group[x]];
+                x = group[x];
+            }
+            return x;
+        };
+        const float target = tol.linearSlop;
+        for (const auto& [fi, oi] : pairs) {
+            const Shape& f = shapes[fi];
+            const Shape& o = shapes[oi];
+            const Body& bf = bodies[f.body];
+            const Convex other = convexOf(o);
+            const float otherReach = o.kind == ShapeKind::HalfSpace ? 0.0f : reach(o, bodies[o.body]);
+            const Convex core{ &f.centroid, 1, 0.5f * innerExtent(f, bf), false };
+            const float coreReach = length(f.local.apply(f.centroid) - bf.localCenter) + core.radius;
+            float coreT = 1.0f, t = 1.0f;
+            if (timeOfImpact(core, f.local, sweeps[f.body], coreReach, other, o.local, sweeps[o.body], otherReach, target,
+                             coreT) != Impact::Hit) {
+                continue;
+            }
+            if (timeOfImpact(convexOf(f), f.local, sweeps[f.body], reach(f, bf), other, o.local, sweeps[o.body], otherReach,
+                             target, t) != Impact::Hit) {
+                t = coreT;
+            }
+            fraction[f.body] = std::fmin(fraction[f.body], t);
+            if (bodies[o.body].type == MotionType::Dynamic) {
+                const uint32_t ra = find(f.body), rb = find(o.body);
+                if (ra != rb) { group[std::max(ra, rb)] = std::min(ra, rb); }
+            }
+        }
+
+        // Dynamic bodies that hit each other move back together, so none is left inside another.
+        for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
+            const uint32_t r = find(bi);
+            fraction[r] = std::fmin(fraction[r], fraction[bi]);
+        }
+        for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
+            const float t = fraction[find(bi)];
+            Body& b = bodies[bi];
+            if (t >= 1.0f || b.type != MotionType::Dynamic || !b.awake) { continue; }
+            b.xf = sweeps[bi].at(t);
+            b.com = b.xf.apply(b.localCenter);
+            updateInverseMass(b);
+            ++profile.impacts;
+        }
+    }
+
     void step(float dt) {
         if (dt <= 0.0f) { return; }
         const Clock::time_point start = Clock::now();
@@ -439,6 +569,8 @@ struct World::Impl {
         for (Body& b : bodies) {
             if (!b.alive) { continue; }
             b.q0 = b.xf.q;
+            b.com0 = b.com;
+            b.expectedTravel = (length(b.v) + length(b.w) * bodyExtent(b)) * dt;
             b.dp = Vec3{};
             b.dq = Quat{};
             updateInverseMass(b);
@@ -487,6 +619,9 @@ struct World::Impl {
                 b.hasTarget = false;
             }
         }
+        const Clock::time_point continuousStart = Clock::now();
+        solveContinuous();
+        profile.continuous = millisecondsSince(continuousStart);
         const Clock::time_point sleepStart = Clock::now();
         updateSleep(dt);
         profile.sleep = millisecondsSince(sleepStart);

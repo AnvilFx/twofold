@@ -22,7 +22,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `include/twofold/hull.h` | `computeHull` |
 | `include/twofold/outline.h` | Alpha tracing, contour simplification, convex decomposition |
 | `src/internal.h` | Internal types shared by the source files |
-| `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping |
+| `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping, continuous collision |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
 | `src/collide3d.cpp` | SAT for polyhedra, sphere and half-space pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
@@ -104,7 +104,9 @@ every hull has volume.
    - relax: solve contacts again without bias
 5. **Restitution.** One pass over points that were approaching faster than the threshold.
 6. **Clean up.** Forces and torques clear, and kinematic bodies snap to their targets.
-7. **Sleep.** Islands are rebuilt and the ones that have been slow long enough fall asleep.
+7. **Continuous collision.** Bodies that moved well past what their speculative contacts
+   covered are swept and moved back.
+8. **Sleep.** Islands are rebuilt and the ones that have been slow long enough fall asleep.
 
 ### Broadphase
 
@@ -186,6 +188,30 @@ Friction is a two-axis cone, clamped by the point's normal impulse times the mix
 friction. The default mixing is the geometric mean for friction and the maximum for
 restitution. Both can be replaced with `setFrictionMix` and `setRestitutionMix`.
 
+## Continuous collision
+
+Speculative contacts cover motion at the velocities a step starts with. A body that speeds
+up within the step, from a hit or a large force, can still pass through a thin shape. After
+the solve, a shape counts as fast when it moved and turned further than the step expected
+plus half its inner extent.
+
+Fast shapes are swept against everything near their path in two stages:
+
+1. A core sphere, at the shape's centroid with half its inner extent as radius, is swept
+   with conservative advancement. If the core never reaches the other shape, nothing
+   tunneled and the body keeps its pose.
+2. If the core hits, the full shape is swept to find where it first touched. The body moves
+   back to that time on its sweep.
+
+Dynamic bodies that hit each other move back together, to the earliest time in the group,
+so none is left inside another. Time is lost for a moved body. The next step carries on
+with the velocity the solve gave it.
+
+For a planar body, the inner extent ignores the faces facing along the plane normal. A
+thin layer is wide in the plane, and that width is what keeps it from tunneling.
+
+See [decision 7](decisions/0007-continuous-collision-past-the-speculative-margin.md).
+
 ## Sleeping and waking
 
 A body's sleep timer runs while its speed, counting rotation at its farthest point, stays
@@ -242,5 +268,3 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   tree after that.
 - A planar body on a half-space goes through the 3D path. It behaves correctly but does
   not get the exact circles of the planar path.
-- No continuous collision. A body that speeds up within a step, from a hit or a large
-  force, can pass through a thin shape.

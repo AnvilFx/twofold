@@ -8,6 +8,22 @@ Notes as I go, newest first. The longer reasoning behind some of this is in
 GJK distance and conservative advancement for time of impact, for continuous collision.
 The simplex solve uses Ericson's closest point on a triangle. Nothing calls it yet.
 
+Continuous collision. Speculative contacts already stop anything moving at the speed the
+step started with. What gets through is a body that speeds up within the step: knocked by
+another body, or pushed by a huge force. After the solve, any shape that moved more than
+the step expected plus half its inner extent gets swept against everything near its path.
+
+The sweep is done twice. First a small sphere at the shape's core. If the core never
+reaches the other shape, nothing tunneled, and the body stays where the solve put it. Only
+if the core gets through does the full shape get swept to find the first touch. Without the
+core check, every graze rewound the body and fast bodies stuttered.
+
+Dynamic bodies that hit each other rewind together. Rewinding one into a body that didn't
+rewind just makes a new overlap.
+
+Thin planar layers would always count as fast, since their inner extent is the layer
+thickness. For planar bodies the faces along the plane normal are left out of it.
+
 ## 2026-10-27 00:50
 
 Convex hulls from point clouds. Quickhull, stopping at a vertex limit, always taking the

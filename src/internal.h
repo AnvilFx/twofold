@@ -148,6 +148,9 @@ struct Body {
     Vec3 dp;
     Quat dq;
     Quat q0;
+    Vec3 com0;
+    // How far any point of the body could move at the velocities the step started with.
+    float expectedTravel = 0.0f;
 
     bool planar() const { return (locks & LockPlanar) == LockPlanar; }
     Vec3 planeNormal() const { return lockFrame.rotate({ 0, 0, 1 }); }
