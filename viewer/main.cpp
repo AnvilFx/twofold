@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,7 @@
 #include "imgui.h"
 #include "raylib.h"
 #include "rlImGui.h"
+#include "rlgl.h"
 #include "session.h"
 
 using namespace twofold;
@@ -24,6 +26,17 @@ const ImVec4 kWarning{ 1.0f, 0.45f, 0.35f, 1.0f };
 
 Vector3 rl(const Vec3& v) { return { v.x, v.y, v.z }; }
 Vec3 tf(const Vector3& v) { return { v.x, v.y, v.z }; }
+
+// Layout lengths are written for a 100% display scale.
+float px(float v) { return v * ImGui::GetStyle().FontScaleDpi; }
+
+// TakeScreenshot scales the read by the display scale, which this window does not use.
+void saveScreenshot(const char* file) {
+    Image image{ rlReadScreenPixels(GetRenderWidth(), GetRenderHeight()), GetRenderWidth(), GetRenderHeight(), 1,
+                 PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+    ExportImage(image, file);
+    UnloadImage(image);
+}
 
 const char* geometryName(const Geometry& g) {
     static const char* names[] = { "Sphere", "Box", "Cylinder", "Prism", "Hull", "Half-space" };
@@ -105,6 +118,12 @@ struct BodyRow {
     float height;
 };
 
+struct Panel {
+    ImVec2 pos;
+    ImVec2 size;
+    float scale = 0.0f;
+};
+
 enum BodyFilter { FilterAll, FilterDynamic, FilterAwake, FilterPlanar };
 
 void plot(const char* label, const std::vector<float>& values, const char* format, float current) {
@@ -114,7 +133,7 @@ void plot(const char* label, const std::vector<float>& values, const char* forma
     std::snprintf(overlay, sizeof(overlay), format, current);
     ImGui::TextUnformatted(label);
     ImGui::PlotLines((std::string("##") + label).c_str(), values.data(), (int)values.size(), 0, overlay, 0.0f,
-                     top > 0.0f ? top * 1.15f : 1.0f, { -1.0f, 48.0f });
+                     top > 0.0f ? top * 1.15f : 1.0f, { -1.0f, px(48) });
 }
 
 struct App {
@@ -134,9 +153,52 @@ struct App {
     float shotDensity = 6.0f;
     int bodyFilter = FilterAll;
     std::string verifyResult;
+    ImGuiStyle baseStyle;
+    std::map<std::string, Panel> panels;
 
     Scene& scene() { return session.scene(); }
     World& world() { return session.scene().world; }
+
+    // Follows the display scale of the monitor the window is on. The window keeps its top edge and
+    // horizontal center, within that monitor.
+    void updateScale() {
+        ImGuiStyle& style = ImGui::GetStyle();
+        const float scale = GetWindowScaleDPI().x;
+        if (scale == style.FontScaleDpi) { return; }
+        const float ratio = scale / style.FontScaleDpi;
+        style = baseStyle;
+        style.ScaleAllSizes(scale);
+        style.FontScaleDpi = scale;
+        if (IsWindowMaximized() || IsWindowFullscreen()) { return; }
+        const Vector2 pos = GetWindowPosition();
+        const int w = GetScreenWidth(), h = GetScreenHeight();
+        const int nw = (int)std::lround((float)w * ratio), nh = (int)std::lround((float)h * ratio);
+        const int monitor = GetCurrentMonitor();
+        const int left = (int)GetMonitorPosition(monitor).x;
+        const int right = left + GetMonitorWidth(monitor) - nw;
+        SetWindowSize(nw, nh);
+        SetWindowPosition(std::max(left, std::min((int)pos.x + (w - nw) / 2, right)), (int)pos.y);
+    }
+
+    // A panel laid out at another display scale is scaled with it, so it keeps its place and proportions.
+    // A zero height fits the panel to its content.
+    bool beginPanel(const char* name, const ImVec2& pos, const ImVec2& size) {
+        Panel& p = panels[name];
+        const float scale = px(1.0f);
+        if (p.scale > 0.0f && p.scale != scale) {
+            const float r = scale / p.scale;
+            ImGui::SetNextWindowPos({ p.pos.x * r, p.pos.y * r });
+            ImGui::SetNextWindowSize({ p.size.x * r, size.y > 0.0f ? p.size.y * r : 0.0f });
+        } else {
+            ImGui::SetNextWindowPos(pos, ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(size, ImGuiCond_FirstUseEver);
+        }
+        const bool open = ImGui::Begin(name);
+        p.pos = ImGui::GetWindowPos();
+        if (open || p.scale != scale) { p.size = ImGui::GetWindowSize(); }
+        p.scale = scale;
+        return open;
+    }
 
     void load(int index, bool resetCamera) {
         session.load(index, settings, 1.0f / (float)kRates[rate]);
@@ -308,7 +370,7 @@ struct App {
         ImGui::SameLine();
         if (ImGui::Button("<")) { seek(session.frame() - 1); }
         ImGui::SameLine();
-        if (ImGui::Button(playing ? "Pause" : "Play", { 60, 0 })) { playing = !playing; }
+        if (ImGui::Button(playing ? "Pause" : "Play", { px(60), 0 })) { playing = !playing; }
         ImGui::SameLine();
         if (ImGui::Button(">")) {
             playing = false;
@@ -326,9 +388,9 @@ struct App {
             seek(frame);
         }
         ImGui::Text("t %.3f s   recorded %d to %d", scene().time, session.firstFrame(), session.lastFrame());
-        ImGui::SetNextItemWidth(150.0f);
+        ImGui::SetNextItemWidth(px(150));
         ImGui::SliderFloat("Speed", &timeScale, 0.02f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
-        ImGui::SetNextItemWidth(150.0f);
+        ImGui::SetNextItemWidth(px(150));
         if (ImGui::Combo("Step rate", &rate, "30 Hz\0" "60 Hz\0" "120 Hz\0" "240 Hz\0")) {
             const float dt = 1.0f / (float)kRates[rate];
             edit([dt](Scene& s) { s.dt = dt; });
@@ -355,26 +417,26 @@ struct App {
 
     void drawOptions() {
         int mode = (int)draw.colorMode;
-        ImGui::SetNextItemWidth(150.0f);
+        ImGui::SetNextItemWidth(px(150));
         if (ImGui::Combo("Color", &mode, "Material\0" "Motion state\0" "Island\0" "Speed\0")) { draw.colorMode = (ColorMode)mode; }
         ImGui::Checkbox("Wireframe", &draw.wireframe);
-        ImGui::SameLine(160.0f);
+        ImGui::SameLine(px(160));
         ImGui::Checkbox("Labels", &labels);
         ImGui::Checkbox("Contacts", &draw.contacts);
-        ImGui::SameLine(160.0f);
+        ImGui::SameLine(px(160));
         ImGui::Checkbox("Speculative", &draw.speculative);
         ImGui::Checkbox("Normal forces", &draw.forces);
-        ImGui::SameLine(160.0f);
+        ImGui::SameLine(px(160));
         ImGui::Checkbox("Friction forces", &draw.friction);
         if (draw.forces || draw.friction) {
-            ImGui::SetNextItemWidth(150.0f);
+            ImGui::SetNextItemWidth(px(150));
             ImGui::SliderFloat("Length per newton", &draw.forceScale, 0.001f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         }
         ImGui::Checkbox("Bounds", &draw.bounds);
-        ImGui::SameLine(160.0f);
+        ImGui::SameLine(px(160));
         ImGui::Checkbox("Centers and axes", &draw.centers);
         ImGui::Checkbox("Velocities", &draw.velocities);
-        ImGui::SameLine(160.0f);
+        ImGui::SameLine(px(160));
         ImGui::Checkbox("Lock planes", &draw.planes);
         ImGui::Checkbox("Only the selected body", &draw.selectedOnly);
     }
@@ -402,9 +464,7 @@ struct App {
     }
 
     void controlPanel() {
-        ImGui::SetNextWindowPos({ 10, 10 }, ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize({ 360, 0 }, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Twofold")) {
+        if (beginPanel("Twofold", { px(10), px(10) }, { px(360), 0 })) {
             timeline();
             if (ImGui::CollapsingHeader("Draw", ImGuiTreeNodeFlags_DefaultOpen)) { drawOptions(); }
             if (ImGui::CollapsingHeader("World")) { worldSettings(); }
@@ -435,9 +495,7 @@ struct App {
     }
 
     void statsPanel() {
-        ImGui::SetNextWindowPos({ (float)GetScreenWidth() - 330.0f, 10 }, ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize({ 320, 0 }, ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Step")) {
+        if (!beginPanel("Step", { (float)GetScreenWidth() - px(330), px(10) }, { px(320), 0 })) {
             ImGui::End();
             return;
         }
@@ -488,13 +546,11 @@ struct App {
     }
 
     void bodiesPanel() {
-        ImGui::SetNextWindowPos({ 10, (float)GetScreenHeight() - 330.0f }, ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize({ 460, 320 }, ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Bodies")) {
+        if (!beginPanel("Bodies", { px(10), (float)GetScreenHeight() - px(330) }, { px(460), px(320) })) {
             ImGui::End();
             return;
         }
-        ImGui::SetNextItemWidth(150.0f);
+        ImGui::SetNextItemWidth(px(150));
         ImGui::Combo("Show", &bodyFilter, "All\0" "Dynamic\0" "Awake\0" "Planar\0");
         std::vector<BodyRow> rows = bodyRows();
         const ImGuiTableFlags flags = ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
@@ -629,9 +685,7 @@ struct App {
 
     void inspector() {
         if (selected == BodyId{}) { return; }
-        ImGui::SetNextWindowPos({ (float)GetScreenWidth() - 380.0f, 420 }, ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize({ 370, 480 }, ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Inspector")) {
+        if (!beginPanel("Inspector", { (float)GetScreenWidth() - px(380), px(420) }, { px(370), px(480) })) {
             ImGui::End();
             return;
         }
@@ -647,7 +701,7 @@ struct App {
         ImGui::SameLine();
         ImGui::TextDisabled("generation %u", b.generation);
         int type = (int)w.motionType(b);
-        ImGui::SetNextItemWidth(120.0f);
+        ImGui::SetNextItemWidth(px(120));
         if (ImGui::Combo("Type", &type, "Static\0" "Kinematic\0" "Dynamic\0")) {
             edit([b, type](Scene& s) { s.world.setMotionType(b, (MotionType)type); });
         }
@@ -740,7 +794,8 @@ struct App {
             const Vector2 s = GetWorldToScreen(rl(w.centerOfMass(b)), cam);
             char text[16];
             std::snprintf(text, sizeof(text), "%u", b.index);
-            list->AddText({ s.x - 6.0f, s.y - 7.0f }, b == selected ? IM_COL32(255, 220, 60, 255) : IM_COL32(255, 255, 255, 220), text);
+            const ImU32 color = b == selected ? IM_COL32(255, 220, 60, 255) : IM_COL32(255, 255, 255, 220);
+            list->AddText({ s.x - px(6), s.y - px(7) }, color, text);
         }
     }
 
@@ -762,7 +817,7 @@ struct App {
         bodiesPanel();
         inspector();
         rlImGuiEnd();
-        if (screenshot) { TakeScreenshot(screenshot); }
+        if (screenshot) { saveScreenshot(screenshot); }
         EndDrawing();
     }
 };
@@ -790,7 +845,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIGHDPI | FLAG_VSYNC_HINT);
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
     InitWindow(1440, 860, "Twofold viewer");
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
@@ -799,10 +854,17 @@ int main(int argc, char** argv) {
     ImGui::GetStyle().FontSizeBase = 15.0f;
 
     App app;
+    app.baseStyle = ImGui::GetStyle();
+    app.updateScale();
+    const int monitor = GetCurrentMonitor();
+    const Vector2 corner = GetMonitorPosition(monitor);
+    SetWindowPosition((int)corner.x + (GetMonitorWidth(monitor) - GetScreenWidth()) / 2,
+                      (int)corner.y + (GetMonitorHeight(monitor) - GetScreenHeight()) / 2);
     app.load(sceneIndex, true);
     app.draw.contacts = contacts;
     int frame = 0;
     while (!WindowShouldClose()) {
+        app.updateScale();
         app.orbit.update();
         const Camera3D cam = app.orbit.camera();
         if (screenshot) {
