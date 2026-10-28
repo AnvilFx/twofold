@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cmath>
 
 #include "test.h"
@@ -1067,4 +1068,98 @@ TEST(rolling_resistance_holds_a_ball_on_a_gentle_slope) {
             CHECK(w.position(ball).x < -1.0f);
         }
     }
+}
+
+TEST(body_made_static_or_kinematic_drops_its_contact_with_the_ground) {
+    for (MotionType type : { MotionType::Static, MotionType::Kinematic }) {
+        World w;
+        addGround(w);
+        const BodyId b = addBox(w, { 0, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+        run(w, 0.5f);
+        CHECK(w.contacts().size() == 1);
+        w.setMotionType(b, type);
+        CHECK(w.contacts(true).empty());
+        run(w, 0.5f);
+        CHECK(w.contacts(true).empty());
+    }
+}
+
+TEST(destroying_sleeping_bodies_costs_what_they_touch) {
+    // Pairs of stacked boxes, each its own island, destroyed one body at a time.
+    auto seconds = [](int pairs) {
+        double best = 1e9;
+        for (int trial = 0; trial < 3; ++trial) {
+            World w;
+            addBox(w, { 0, -0.5f, 0 }, { 200, 0.5f, 200 }, MotionType::Static);
+            std::vector<BodyId> ids;
+            const int side = (int)std::ceil(std::sqrt((float)pairs));
+            for (int i = 0; i < pairs; ++i) {
+                const float x = 1.5f * (float)(i % side), z = 1.5f * (float)(i / side);
+                ids.push_back(addBox(w, { x, 0.5f, z }, { 0.5f, 0.5f, 0.5f }));
+                ids.push_back(addBox(w, { x, 1.5f, z }, { 0.5f, 0.5f, 0.5f }));
+            }
+            run(w, 1.0f);
+            const auto start = std::chrono::steady_clock::now();
+            for (BodyId b : ids) { w.destroyBody(b); }
+            best = std::fmin(best, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+        }
+        return best;
+    };
+    CHECK(seconds(2000) < 8.0 * seconds(500));
+}
+
+TEST(moved_shape_settles_at_its_new_offset) {
+    World w;
+    addGround(w);
+    const BodyId b = addBox(w, { 0, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+    run(w, 3.0f);
+    CHECK(!w.isAwake(b));
+    const ShapeId s = w.shapes(b)[0];
+    w.setLocalTransform(s, { 0, -0.2f, 0 }, Quat::axisAngle({ 0, 1, 0 }, 0.5f));
+    CHECK(w.isAwake(b));
+    CHECK_NEAR(w.localTransform(s).p.y, -0.2f, 1e-6f);
+    CHECK_NEAR(w.bounds(s).lower.y, w.position(b).y - 0.7f, 1e-4f);
+    CHECK_NEAR(w.centerOfMass(b).y, w.position(b).y - 0.2f, 1e-4f);
+    run(w, 1.0f);
+    CHECK_NEAR(w.position(b).y, 0.7f, 0.01f);
+    CHECK(deepestContact(w) < 0.01f);
+}
+
+TEST(moving_a_floor_shape_away_wakes_what_rests_on_it) {
+    World w;
+    const BodyId floor = addBox(w, { 0, -0.5f, 0 }, { 3, 0.5f, 3 }, MotionType::Static);
+    const BodyId b = addBox(w, { 0, 0.5f, 0 }, { 0.5f, 0.5f, 0.5f });
+    run(w, 3.0f);
+    CHECK(!w.isAwake(b));
+    w.setLocalTransform(w.shapes(floor)[0], { 0, -2, 0 }, {});
+    CHECK(w.isAwake(b));
+    run(w, 1.5f);
+    CHECK_NEAR(w.position(b).y, -1.5f, 0.02f);
+}
+
+TEST(shape_turned_in_place_lands_on_its_new_side) {
+    World w;
+    addGround(w);
+    const BodyId b = addBox(w, { 0, 0.8f, 0 }, { 0.5f, 0.8f, 0.5f });
+    run(w, 3.0f);
+    CHECK(!w.isAwake(b));
+    w.setLocalTransform(w.shapes(b)[0], {}, Quat::axisAngle({ 1, 0, 0 }, 0.5f * kPi));
+    run(w, 1.0f);
+    CHECK_NEAR(w.position(b).y, 0.5f, 0.01f);
+}
+
+TEST(body_knocked_into_moving_paddle_ends_outside_it) {
+    WorldSettings ws;
+    ws.gravity = { 0, 0, 0 };
+    World w(ws);
+    const BodyId paddle = addBox(w, { 1.7f, 0, 0 }, { 0.1f, 1, 1 }, MotionType::Kinematic);
+    w.setLinearVelocity(paddle, { -30, 0, 0 });
+    const BodyId ball = addSphere(w, { 0, 0, 0 }, 0.25f, 1.0f);
+    const BodyId striker = addSphere(w, { -0.51f, 0, 0 }, 0.25f, 1.0f);
+    w.setLinearVelocity(striker, { 200, 0, 0 });
+    for (int i = 0; i < 20; ++i) {
+        w.step(kDt);
+        CHECK(std::fabs(w.position(ball).x - w.position(paddle).x) > 0.34f);
+    }
+    CHECK(w.linearVelocity(ball).x < -100.0f);
 }

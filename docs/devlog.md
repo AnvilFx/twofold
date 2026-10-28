@@ -3,6 +3,47 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 02:09
+
+A dynamic body resting on the ground and then made static kept its contact with the ground
+forever, two static bodies touching. A body that stops being dynamic now drops its
+contacts with static and kinematic bodies, and the step won't carry such a contact either.
+
+Removing contacts rebuilt a list of every contact and joint for each body to wake from, on
+every call. Destroying 8000 resting pairs one at a time took 1.1 s. Removed contacts are
+now only marked and dropped by the next step, and waking walks links built once per step.
+The same takes 2.5 ms.
+
+`setLocalTransform`, to move a shape on its body. It does what `setGeometry` does.
+
+A ball knocked into a fast kinematic paddle rewound to the time of impact while the paddle
+kept its end pose, so it could end up 0.3 m inside it. A body whose first hit is with a
+kinematic body now rides along with it to the end of the step.
+
+Time of impact advanced by the GJK distance, which is an upper bound when GJK stops early.
+Nearly parallel cylinders stop early often, and some long sweeps ended up to 4 mm inside.
+It advances by the gap along the GJK normal now when that is smaller.
+
+Ray casts said the lowest shape index wins a tie, but a later shape at the same fraction
+replaced the earlier one. Fixed.
+
+Planar bodies against a half-space always took the 3D path. That is most pairs in a 2D
+scene. A half-space standing on the body's plane is now a half-plane on the planar path.
+See [decision 23](decisions/0023-half-spaces-are-half-planes-on-the-planar-path.md). The
+planar path also keeps small polygons inline instead of allocating two vectors per pair.
+
+`alphaPieces` was quadratic on comb-like outlines: 1000 teeth took 1.3 s, 4000 took 26 s.
+The farthest point search in Douglas-Peucker walks a box tree now, and ear clipping only
+tests vertices in nearby grid cells. 25 ms and 110 ms. Near ties between points on long,
+nearly flat runs are now settled exactly, which changes the result on a few images by a
+vertex or two.
+
+Thin bodies hitting the ground at 100 m/s and more still come back up with restitution 0.
+Reduction drops the speculative points about to land, and contacts anchored at the
+midpoint give a fast spinner the wrong lever arms. Keeping those points and anchoring on
+each body's surface stops it up to 500 m/s, but leaves resting cylinders a little deeper
+and breaks the spinning cylinder test, so it waits.
+
 ## 2026-10-28 02:08
 
 Went looking for ways to break things with bad input, and found a few.

@@ -333,6 +333,8 @@ struct Contact {
     Vec3 baseOffset;
     Quat baseTurn;
     bool reusable = false;
+    // A contact removed between steps stays in place until the next step drops it.
+    bool removed = false;
 
     bool touching() const {
         for (int i = 0; i < count; ++i) {

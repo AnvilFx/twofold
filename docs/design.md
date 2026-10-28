@@ -90,6 +90,9 @@ once is replaced by its convex outline. A box or prism with no thickness in some
 gets the same slab `computeHull` gives a flat cloud, so every polyhedron has volume and
 every face has a normal.
 
+`setLocalTransform` moves a shape on its body. Like `setGeometry`, it updates the bounds
+and the mass, keeps the shape's contacts from being reused, and wakes the body.
+
 A `TriangleMesh` merges vertices at the same position, drops vertices that are not finite,
 and drops triangles whose widest corner has a sine under 1e-3. Its tree splits at the
 median of the triangle centers along their widest axis, down to four triangles a leaf.
@@ -244,8 +247,15 @@ only those lets the body seesaw.
 A pair tries the 2D path first when every dynamic body in it is planar and their plane
 normals are parallel. Static and kinematic bodies fit any plane. `makeProfile` turns
 each shape into a 2D profile in the plane: a polygon for a box or prism, a circle for a
-cylinder, plus the depth range it covers along the normal. It fails for anything that does
-not extrude along the normal, and then the pair uses the 3D path.
+cylinder, plus the depth range it covers along the normal. A half-space whose plane stands
+on the body's plane, within the same tolerance, becomes a half-plane that covers every
+depth. It fails for anything that does not extrude along the normal, and then the pair
+uses the 3D path. Two half-planes always do.
+
+A polygon meets a half-plane with the edge facing it most, a circle with one point. The
+line is taken at the middle of the other profile's depth range, which also covers a
+half-space tilted within the tolerance. See
+[decision 23](decisions/0023-half-spaces-are-half-planes-on-the-planar-path.md).
 
 Profiles whose depth ranges do not overlap never touch, so layers at different depths pass
 each other. Otherwise polygons collide with reference and incident edges as in Box2D, and
@@ -385,12 +395,15 @@ Fast shapes are swept against everything near their path in two stages:
 
 1. A core sphere, at the shape's centroid with half its inner extent as radius, is swept
    with conservative advancement. If the core never reaches the other shape, nothing
-   tunneled and the body keeps its pose.
+   tunneled and the body keeps its pose. Each advance uses the gap along the GJK normal
+   when it is smaller than the GJK distance, since GJK can stop above the true distance.
 2. If the core hits, the full shape is swept to find where it first touched. The body moves
    back to that time on its sweep.
 
 Dynamic bodies that hit each other move back together, to the earliest time in the group,
-so none is left inside another. Against a mesh, the full shape is swept against each
+so none is left inside another. A kinematic body keeps moving after the hit, so whatever
+first hit one rides along with it from the time of impact to the end of the step. Against
+a mesh, the full shape is swept against each
 triangle under the path. The triangles are found in the mesh's frame at its poses at both
 ends of the step.
 Meshes are never fast themselves. Time is lost for a moved body. The next step carries on
@@ -404,11 +417,14 @@ See [decision 7](decisions/0007-continuous-collision-past-the-speculative-margin
 ## Sleeping and waking
 
 A body's sleep timer runs while its speed, counting rotation at its farthest point, stays
-under `sleepThreshold`. Islands are rebuilt every step with union-find over touching
-contacts between awake dynamic bodies. An island sleeps when every body in it has been slow
-for `timeToSleep`. A moving kinematic body keeps whatever touches it awake.
+under `sleepThreshold`. Islands are rebuilt every step with union-find over contacts with
+points between awake dynamic bodies, speculative points included. The narrowphase wakes a
+sleeping body near a moving one, so islands split only at touching contacts would keep
+waking each other. An island sleeps when every body in it has been slow for `timeToSleep`.
+A moving kinematic body keeps whatever touches it awake.
 
-Waking floods through touching contacts from the bodies that need it:
+Waking floods through contacts with points and through joints, from the bodies that need
+it. Each body's links are built when first needed after a step or a new joint:
 
 - A dynamic body wakes its whole island.
 - A static or kinematic body wakes the dynamic bodies touching it, without spreading past
@@ -416,7 +432,9 @@ Waking floods through touching contacts from the bodies that need it:
   test is against its plane.
 - A sleeping body touched by a moving body wakes during the narrowphase.
 
-Removing a shape or body wakes the dynamic bodies that touched it.
+Removing a shape or body wakes the dynamic bodies that touched it. Its contacts are marked
+removed and dropped by the next step, so the cost is what the body touched. A body that
+stops being dynamic loses its contacts with static and kinematic bodies.
 
 See [decision 10](decisions/0010-moved-anchors-wake-what-they-overlap.md).
 
@@ -434,6 +452,10 @@ addresses or hashing. Candidate pairs and contacts are sorted by shape index, an
 are visited by index. The tests run the same scene twice and compare every pose bit for
 bit, and check that a copied world steps like the original. The viewer's verify command
 replays a whole session from a fresh scene and compares every frame.
+
+Strict float flags keep the compiler from fusing or reordering float math. Results still
+depend on the platform's `sin`, `cos` and `atan2`, which turns, joints and outlines use, so
+two platforms can differ.
 
 See [decision 3](decisions/0003-single-threaded-and-deterministic.md).
 
@@ -466,6 +488,10 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   deep for 8 to 12 frames before they recover. This also happens without the mid-step
   refresh. Pushing deep pairs out harder fixes it but keeps some hull piles from ever
   sleeping.
+- A thin body hitting the ground at 100 m/s or more can come back up with restitution 0,
+  at 1 to 30 m/s, and spin up. Reduction drops the speculative points about to land, and
+  contacts anchored at the midpoint give fast spinners the wrong lever arms. Fixing both
+  stops it up to 500 m/s but leaves resting cylinders slightly deeper.
 - Cylinder pairs overlapping by less than 4 cm keep the feature axis estimate, which in
   rare poses is off by up to 30 mm.
 - A hull built thousands of units from the origin can have faces off by more than the
@@ -473,3 +499,4 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   body and place them with the body's pose.
 - Spheres and cylinders with a radius or height of zero, below zero or not finite are not
   cleaned up.
+- `alphaPieces` is quadratic in the number of holes.

@@ -99,6 +99,39 @@ TEST(heavy_gravity_cannot_pull_sphere_through_thin_floor) {
     }
 }
 
+TEST(swept_cylinder_stops_short_of_another_cylinder) {
+    const float r = 5.0f;
+    float closest = INFINITY;
+    for (int trial = 0; trial < 300; ++trial) {
+        World w = weightless();
+        addBody(w, MotionType::Static, {}, Cylinder{ r, r });
+        const float t = (float)trial;
+        const Vec3 axis = normalize(Vec3{ std::sin(t), std::cos(1.7f * t), std::sin(2.3f * t) });
+        const float tilt = std::pow(10.0f, -2.0f - 0.01f * t);
+        const Vec3 start{ 2.3f * r, 0.5f * r * std::sin(5.1f * t), 0.3f * r * std::cos(3.7f * t) };
+        const BodyId b = addBody(w, MotionType::Dynamic, start, Cylinder{ r, r }, Quat::axisAngle(axis, tilt));
+        w.addForce(b, { -3.0f * r * w.massProperties(b).mass / (kDt * kDt), 0, 0 });
+        w.step(kDt);
+        // Along each line the ray from inside the static cylinder finds the moved one, and the ray back from
+        // inside the moved one finds the static one. They overlap where the second hit lies past the first.
+        const Transform xb = w.transform(b);
+        auto inside = [&](const Vec3& p) {
+            const Vec3 q = xb.applyInverse(p);
+            return q.x * q.x + q.y * q.y < 0.99f * r * r && std::fabs(q.z) < 0.99f * r;
+        };
+        for (float y = 0.5f * start.y - 0.4f; y <= 0.5f * start.y + 0.4f; y += 0.02f) {
+            for (float z = -0.98f * r; z <= 0.98f * r; z += 0.07f) {
+                const Vec3 from{ 0, y, z }, back{ xb.p.x, y, z };
+                if (!inside(back) || inside(from)) { continue; }
+                RayHit hitB, hitA;
+                if (!w.castRay(from, back - from, hitB) || !w.castRay(back, from - back, hitA)) { continue; }
+                closest = std::fmin(closest, hitB.point.x - hitA.point.x);
+            }
+        }
+    }
+    CHECK(closest > 0.0f && closest < 0.02f);
+}
+
 TEST(slow_bodies_are_not_swept) {
     World w;
     addBody(w, MotionType::Static, { 0, -0.5f, 0 }, Box{ { 5, 0.5f, 5 } });
