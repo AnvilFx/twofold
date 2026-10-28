@@ -599,8 +599,37 @@ int distanceAxes(Convex ca, const Transform& xa, Convex cb, const Transform& xb,
     return count;
 }
 
+Vec3 centerOf(const Solid& s) {
+    if (s.cylinder) { return s.center; }
+    Vec3 c;
+    for (int k = 0; k < s.poly.vertexCount; ++k) { c = c + s.poly.v[k]; }
+    return c / (float)s.poly.vertexCount;
+}
+
+// Tilts from start while that separates the solids more. No direction separates them by more than they are
+// apart, so each step only comes closer to the true one.
+Separation climb(const Solid& a, const Solid& b, Separation start) {
+    constexpr float kDiagonal = 0.70710678f;
+    const float turns[8][2] = { { 1, 0 }, { kDiagonal, kDiagonal }, { 0, 1 }, { -kDiagonal, kDiagonal },
+                                { -1, 0 }, { -kDiagonal, -kDiagonal }, { 0, -1 }, { kDiagonal, -kDiagonal } };
+    Separation best = start;
+    float step = 0.1f;
+    for (int i = 0; i < 64 && step > 1e-3f; ++i) {
+        const Vec3 u = perpendicular(best.normal), v = cross(best.normal, u);
+        Separation next = best;
+        for (const float* t : turns) { tryAxis(a, b, best.normal + (u * t[0] + v * t[1]) * step, next); }
+        if (next.gap > best.gap) {
+            best = next;
+        } else {
+            step *= 0.5f;
+        }
+    }
+    return best;
+}
+
 // False when the solids are further apart than margin. A GJK direction only wins where no flat or straight
-// feature pair comes close, such as a rim on an edge.
+// feature pair comes close, such as a rim on an edge. In a deep overlap the GJK directions are approximate or
+// missing, so the best axis climbs toward the direction a curved pair touches along.
 bool separate(const Solid& a, const Solid& b, const Convex& ca, const Transform& xa, const Convex& cb,
               const Transform& xb, const Quat& toFrame, float margin, const Tolerances& tol, Separation& best) {
     best = featureAxes(a, b);
@@ -610,6 +639,24 @@ bool separate(const Solid& a, const Solid& b, const Convex& ca, const Transform&
     Separation curved;
     for (int i = 0; i < count; ++i) { tryAxis(a, b, toFrame.unrotate(n[i]), curved); }
     if (curved.gap > best.gap + 0.1f * tol.linearSlop) { best = curved; }
+    if (best.gap < -2.0f * tol.speculative) {
+        // The gap has several peaks. A rim pressed into the other solid peaks near its cap normal or its side.
+        Separation climbed = climb(a, b, best);
+        const Vec3 d = centerOf(b) - centerOf(a);
+        for (const Solid* s : { &a, &b }) {
+            if (!s->cylinder) { continue; }
+            Separation cap, side;
+            tryAxis(a, b, s->axis, cap);
+            tryAxis(a, b, -s->axis, cap);
+            tryAxis(a, b, d - s->axis * dot(d, s->axis), side);
+            for (const Separation& start : { cap, side }) {
+                if (start.gap == -FLT_MAX) { continue; }
+                const Separation peak = climb(a, b, start);
+                if (peak.gap > climbed.gap) { climbed = peak; }
+            }
+        }
+        if (climbed.gap > best.gap + 0.1f * tol.linearSlop) { best = climbed; }
+    }
     return best.gap <= margin;
 }
 
@@ -664,13 +711,13 @@ void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, cons
 
     const bool faceA = buf.fa.size() >= 3, faceB = buf.fb.size() >= 3;
     const bool refA = faceA && (!faceB || dot(na, n) >= -dot(nb, n));
-    auto clipToFace = [&](const std::vector<Vec3>& feature) {
+    auto clipToFace = [&](const Vec3* feature, size_t count) {
         const std::vector<Vec3>& ref = refA ? buf.fa : buf.fb;
         const Vec3 refN = refA ? na : nb;
         const Vec3 out = refA ? n : -n;
         const float facing = dot(refN, out);
         std::vector<Vec3>& inc = buf.clip.poly;
-        inc = feature;
+        inc.assign(feature, feature + count);
         for (size_t k = 0; k < ref.size() && !inc.empty(); ++k) {
             const Vec3 side = cross(ref[(k + 1) % ref.size()] - ref[k], refN);
             if (inc.size() >= 3) {
@@ -707,15 +754,16 @@ void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, cons
                 return;
             }
         }
+        // Lines tilted against n reach deeper at their ends than where they pass closest.
         Vec3 onA, onB;
         closestOnSegments(a0, a1, b0, b1, onA, onB);
-        add(onA, onB, dot(onB - onA, n));
+        add(onA, onB, std::fmin(dot(b0, n), dot(b1, n)) - std::fmax(dot(a0, n), dot(a1, n)));
     };
 
     const Solid& incident = refA ? b : a;
     const std::vector<Vec3>& incFeature = refA ? buf.fb : buf.fa;
     if (faceA || faceB) {
-        clipToFace(incFeature);
+        clipToFace(incFeature.data(), incFeature.size());
     } else if (buf.fa.size() == 2 && buf.fb.size() == 2) {
         linePair(buf.fa[0], buf.fa[1], buf.fb[0], buf.fb[1]);
     }
@@ -725,7 +773,7 @@ void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, cons
     }
     if ((faceA || faceB) && incident.cylinder && incFeature.size() == 2) {
         turnLines(incident, refA ? -n : n, buf.turn);
-        for (int k = 0; k < 2; ++k) { clipToFace({ buf.turn[2 * k], buf.turn[2 * k + 1] }); }
+        for (int k = 0; k < 2; ++k) { clipToFace(&buf.turn[2 * k], 2); }
     } else if (!faceA && !faceB && buf.fa.size() == 2 && buf.fb.size() == 2) {
         if (a.cylinder) {
             turnLines(a, n, buf.turn);
@@ -939,12 +987,37 @@ Vec3 closestOnTriangle(const Vec3 c[3], const Vec3& p, int& feature) {
     return c[0] + ab * (vb * denom) + ac * (vc * denom);
 }
 
+// The edge or corner of the triangle farthest along d, numbered as above. Only the face has the face's
+// normal, so any other d meets an edge or corner: the edge when its far corner is within tolerance.
+int triangleFeature(const Vec3 c[3], const Vec3& d, float tolerance) {
+    const float h[3] = { dot(c[0], d), dot(c[1], d), dot(c[2], d) };
+    const int top = h[1] > h[0] ? (h[2] > h[1] ? 2 : 1) : (h[2] > h[0] ? 2 : 0);
+    const int next = (top + 1) % 3, prev = (top + 2) % 3;
+    if (h[next] >= h[prev]) { return h[next] >= h[top] - tolerance ? 3 + top : top; }
+    return h[prev] >= h[top] - tolerance ? 3 + prev : top;
+}
+
+// Whether p lies over the triangle along its normal n, within tolerance of its edges.
+bool overTriangle(const Vec3 c[3], const Vec3& n, const Vec3& p, float tolerance) {
+    for (int k = 0; k < 3; ++k) {
+        const Vec3 e = c[(k + 1) % 3] - c[k];
+        if (dot(cross(e, n), p - c[k]) > tolerance * length(e)) { return false; }
+    }
+    return true;
+}
+
 // Whether a contact on the feature may keep a normal other than the face's, seen from side 0 (front) or 1.
 bool ownNormal(uint8_t edges, int feature, int side) {
     const int shift = 3 * side;
     if (feature >= 3 && feature < 6) { return (edges >> (shift + feature - 3)) & 1; }
     if (feature < 3) { return ((edges >> (shift + feature)) & 1) || ((edges >> (shift + (feature + 2) % 3)) & 1); }
     return true;
+}
+
+// A body beside the triangle can be on one side while the normal leans to the other. A feature with a
+// normal of its own on either side keeps the normal.
+bool keepsNormal(uint8_t edges, int feature, int side, const Vec3& normal, const Vec3& n) {
+    return ownNormal(edges, feature, side) || ownNormal(edges, feature, dot(normal, n) >= 0.0f ? 0 : 1);
 }
 
 struct MeshBuffers {
@@ -954,6 +1027,7 @@ struct MeshBuffers {
     ClipBuffers clip;
     RoundBuffers round;
     std::vector<Manifold> found;
+    std::vector<int> owner;
     std::vector<std::vector<ManifoldPoint>> groups;
 };
 
@@ -1104,22 +1178,19 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
 
             // An edge or corner without a normal of its own leaves the push to the face.
             if (std::fabs(dot(best.normal, n)) < 0.9999f) {
-                int deepest = 0;
-                for (int i = 1; i < m.count; ++i) {
-                    if (m.points[i].separation < m.points[deepest].separation) { deepest = i; }
-                }
-                int feature;
-                closestOnTriangle(c, xm.applyInverse(m.points[deepest].position), feature);
                 Separation front, back;
                 tryAxis(a, b, n, front);
                 tryAxis(a, b, -n, back);
                 const int side = front.gap >= back.gap ? 0 : 1;
-                if (!ownNormal(d->edges[t], feature, side)) {
+                if (!keepsNormal(d->edges[t], triangleFeature(c, best.normal, tol.linearSlop), side, best.normal, n)) {
                     const Separation& face = side == 0 ? front : back;
                     m.count = 0;
                     solidContact(a, b, face.normal, face.gap, xm, margin, tol.linearSlop, motion, buf.round, m);
                     for (int k = 0; k < m.count; ++k) {
-                        if (m.points[k].separation < best.gap - tol.linearSlop) { return; }
+                        const Vec3 p = xm.applyInverse(m.points[k].position);
+                        if (m.points[k].separation < best.gap - tol.linearSlop && !overTriangle(c, n, p, tol.linearSlop)) {
+                            return;
+                        }
                     }
                     if (m.count == 0) { return; }
                 }
@@ -1162,19 +1233,15 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             // Off the face normal on an edge or corner that has no normal of its own, the neighbor takes
             // that direction, so this triangle only pushes along its face. Where the face is deeper than
             // the shapes overlap, the contact belongs to the neighbor.
-            if (std::fabs(dot(xm.q.unrotate(m.normal), n)) < 0.9999f) {
-                int deepest = 0;
-                for (int i = 1; i < m.count; ++i) {
-                    if (m.points[i].separation < m.points[deepest].separation) { deepest = i; }
-                }
-                int feature;
-                closestOnTriangle(c, xm.applyInverse(m.points[deepest].position), feature);
-                if (!ownNormal(d->edges[t], feature, fa.index)) {
+            const Vec3 normal = xm.q.unrotate(m.normal);
+            if (std::fabs(dot(normal, n)) < 0.9999f) {
+                if (!keepsNormal(d->edges[t], triangleFeature(c, normal, tol.linearSlop), fa.index, normal, n)) {
                     const float floor = std::fmax(std::fmax(fa.separation, fb.separation), eq.separation) - tol.linearSlop;
                     m.count = 0;
                     faceContact(a, fa.index, b, false, xm, margin, tol.linearSlop, motion, buf.clip, m);
                     for (int k = 0; k < m.count; ++k) {
-                        if (m.points[k].separation < floor) { return; }
+                        const Vec3 p = xm.applyInverse(m.points[k].position);
+                        if (m.points[k].separation < floor && !overTriangle(c, n, p, tol.linearSlop)) { return; }
                     }
                     if (m.count == 0) { return; }
                 }
@@ -1189,7 +1256,8 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
 
     // Triangles facing the same way share one manifold, under the normal of the deepest of them.
     if (buf.groups.size() < buf.found.size()) { buf.groups.resize(buf.found.size()); }
-    std::vector<int> owner(buf.found.size(), -1);
+    std::vector<int>& owner = buf.owner;
+    owner.assign(buf.found.size(), -1);
     int groupCount = 0;
     for (size_t i = 0; i < buf.found.size(); ++i) {
         if (owner[i] >= 0) { continue; }
@@ -1208,8 +1276,11 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
                 }
             }
         }
+        // A curved patch is deepest at one end, so spread is chosen among all penetrating points.
         Manifold m;
-        reduceManifold(pts, buf.found[lead].normal, tol.linearSlop, m);
+        float deep = FLT_MAX;
+        for (const ManifoldPoint& p : pts) { deep = std::fmin(deep, p.predicted); }
+        reduceManifold(pts, buf.found[lead].normal, std::fmax(tol.linearSlop, -deep), m);
         out.push_back(m);
         ++groupCount;
     }

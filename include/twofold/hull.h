@@ -13,7 +13,8 @@ struct HullMesh {
 };
 
 // Convex hull with at most maxVertices corners, keeping the points that reach farthest out.
-// Flat, collinear and single-point clouds are thickened into a thin slab.
+// Flat, collinear and single-point clouds are thickened into a thin slab. Non-finite points are skipped, and a
+// cloud with none left gives an empty mesh.
 HullMesh computeHull(const std::vector<Vec3>& points, int maxVertices = 64);
 
 }

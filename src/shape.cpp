@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cfloat>
 
 #include "internal.h"
 #include "twofold/hull.h"
@@ -14,6 +15,100 @@ std::vector<Vec2> counterClockwise(std::vector<Vec2> poly) {
     for (size_t i = 0; i < poly.size(); ++i) { area += cross(poly[i], poly[(i + 1) % poly.size()]); }
     if (area < 0.0f) { std::reverse(poly.begin(), poly.end()); }
     return poly;
+}
+
+// Below this a box side or prism edge is treated as having no length.
+float thinLimit(float size, float reach) { return std::max({ 1e-6f * size, 3.0f * FLT_EPSILON * reach, 1e-8f }); }
+
+// Half thickness given to a flat shape, as computeHull gives a flat cloud.
+float slabFor(float size, float limit) { return std::max({ 0.005f * size, 1e-4f, 10.0f * limit }); }
+
+bool turnsLeft(const Vec2& a, const Vec2& b, const Vec2& c, float limit) {
+    return cross(b - a, c - b) > limit * length(c - a);
+}
+
+// Counter-clockwise, winding once, with every corner clear of the line through its neighbors.
+bool cleanOutline(const std::vector<Vec2>& poly, float limit) {
+    const size_t n = poly.size();
+    if (n < 3) { return false; }
+    float turning = 0.0f;
+    for (size_t i = 0; i < n; ++i) {
+        const Vec2& a = poly[i];
+        const Vec2& b = poly[(i + 1) % n];
+        const Vec2& c = poly[(i + 2) % n];
+        if (!turnsLeft(a, b, c, limit)) { return false; }
+        turning += std::atan2(cross(b - a, c - b), dot(b - a, c - b));
+    }
+    return turning < 3.0f * kPi;
+}
+
+// Convex outline of the points, dropping repeated and nearly collinear ones. A segment or a single point
+// becomes a thin rectangle, or a square around the center.
+std::vector<Vec2> solidOutline(std::vector<Vec2> pts, float limit, float slab, const Vec2& c) {
+    std::sort(pts.begin(), pts.end(), [](const Vec2& a, const Vec2& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+    std::vector<Vec2> out;
+    for (int pass = 0; pass < 2 && !pts.empty(); ++pass) {
+        const size_t base = out.size();
+        for (const Vec2& p : pts) {
+            while (out.size() >= base + 2 && !turnsLeft(out[out.size() - 2], out.back(), p, limit)) { out.pop_back(); }
+            out.push_back(p);
+        }
+        out.pop_back();
+        std::reverse(pts.begin(), pts.end());
+    }
+    if (out.size() >= 3) { return out; }
+    if (out.size() == 2 && length(out[1] - out[0]) > limit) {
+        const Vec2 d = normalize(out[1] - out[0]);
+        const Vec2 side = Vec2{ -d.y, d.x } * slab;
+        return { out[0] - side, out[1] - side, out[1] + side, out[0] + side };
+    }
+    return { c + Vec2{ -slab, -slab }, c + Vec2{ slab, -slab }, c + Vec2{ slab, slab }, c + Vec2{ -slab, slab } };
+}
+
+// Negative half extents flip and non-finite ones become zero. A side with no length is thickened.
+Vec3 solidBox(Vec3 h) {
+    for (int k = 0; k < 3; ++k) { h[k] = std::isfinite(h[k]) ? std::fabs(h[k]) : 0.0f; }
+    const float size = 2.0f * length(h);
+    const float limit = thinLimit(size, h.x + h.y + h.z);
+    for (int k = 0; k < 3; ++k) {
+        if (2.0f * h[k] <= limit) { h[k] = slabFor(size, limit); }
+    }
+    return h;
+}
+
+// Non-finite points are dropped. A polygon that is not a clean convex outline is replaced by its convex
+// outline, and a prism with no height is thickened.
+void solidPrism(Prism& pr) {
+    std::vector<Vec2> pts;
+    for (const Vec2& p : pr.polygon) {
+        if (std::isfinite(p.x) && std::isfinite(p.y)) { pts.push_back(p); }
+    }
+    if (!std::isfinite(pr.zMin)) { pr.zMin = 0.0f; }
+    if (!std::isfinite(pr.zMax)) { pr.zMax = 0.0f; }
+    if (pr.zMax < pr.zMin) { std::swap(pr.zMin, pr.zMax); }
+    pts = counterClockwise(std::move(pts));
+
+    Vec2 lo{}, hi{};
+    if (!pts.empty()) { lo = hi = pts[0]; }
+    for (const Vec2& p : pts) {
+        lo = { std::min(lo.x, p.x), std::min(lo.y, p.y) };
+        hi = { std::max(hi.x, p.x), std::max(hi.y, p.y) };
+    }
+    const float width = length(hi - lo);
+    const float wide = std::max(std::fabs(lo.x), std::fabs(hi.x)) + std::max(std::fabs(lo.y), std::fabs(hi.y));
+    const float height = pr.zMax - pr.zMin;
+    const float size = std::sqrt(width * width + height * height);
+    const float limit = thinLimit(size, wide + std::max(std::fabs(pr.zMin), std::fabs(pr.zMax)));
+    const float slab = slabFor(size, limit);
+
+    const float flat = thinLimit(width, wide);
+    if (!cleanOutline(pts, flat)) { pts = solidOutline(std::move(pts), flat, slab, (lo + hi) * 0.5f); }
+    pr.polygon = std::move(pts);
+    if (height <= limit) {
+        const float mid = 0.5f * (pr.zMin + pr.zMax);
+        pr.zMin = mid - slab;
+        pr.zMax = mid + slab;
+    }
 }
 
 }
@@ -42,8 +137,9 @@ void buildShape(Shape& s) {
         s.kind = ShapeKind::Sphere;
         s.radius = sp->radius;
         s.extent = sp->radius;
-    } else if (const Box* bx = std::get_if<Box>(&s.geometry)) {
+    } else if (Box* bx = std::get_if<Box>(&s.geometry)) {
         s.kind = ShapeKind::Convex;
+        bx->halfExtents = solidBox(bx->halfExtents);
         s.poly = makeBox(bx->halfExtents);
     } else if (const Cylinder* cy = std::get_if<Cylinder>(&s.geometry)) {
         s.kind = ShapeKind::Cylinder;
@@ -52,18 +148,13 @@ void buildShape(Shape& s) {
         s.extent = std::sqrt(cy->radius * cy->radius + cy->halfHeight * cy->halfHeight);
     } else if (Prism* pr = std::get_if<Prism>(&s.geometry)) {
         s.kind = ShapeKind::Convex;
-        pr->polygon = counterClockwise(pr->polygon);
-        if (pr->zMax < pr->zMin) { std::swap(pr->zMin, pr->zMax); }
+        solidPrism(*pr);
         s.poly = makePrism(pr->polygon, pr->zMin, pr->zMax);
     } else if (const Hull* hu = std::get_if<Hull>(&s.geometry)) {
         HullMesh mesh = computeHull(hu->points, hu->maxVertices);
-        if (mesh.vertices.empty()) {
-            s.kind = ShapeKind::Sphere;
-            s.extent = 0.0f;
-        } else {
-            s.kind = ShapeKind::Convex;
-            s.poly = makePolyhedron(std::move(mesh.vertices), mesh.faces);
-        }
+        if (mesh.vertices.empty()) { mesh = computeHull({ Vec3{} }, hu->maxVertices); }
+        s.kind = ShapeKind::Convex;
+        s.poly = makePolyhedron(std::move(mesh.vertices), mesh.faces);
     } else if (std::holds_alternative<Mesh>(s.geometry)) {
         s.kind = ShapeKind::Mesh;
         s.extent = 0.0f;

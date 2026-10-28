@@ -3,6 +3,50 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 02:08
+
+Went looking for ways to break things with bad input, and found a few.
+
+A box with a zero half extent, or a prism whose polygon repeats its first point, has faces
+with no normal. Contacts against them came out with a zero normal and zero separation, and
+a box dropped on one fell straight through. An empty prism read past the end of its
+polygon, and a box with one negative half extent was inside out, with negative volume.
+Boxes and prisms are now cleaned when the shape is built. Negative half extents flip,
+repeated and collinear points go, a polygon that isn't convex becomes its convex outline,
+and anything with no thickness gets the same slab as a flat hull cloud.
+
+Quickhull could return hulls that weren't convex. About one random sphere cloud in a
+hundred had a vertex up to 8% of the hull size in front of a face, and squashed clouds
+were much worse. An eye point just over the tolerance above one face but under it above
+the next left that neighbor on the horizon, and the new face over the shared edge folded
+back. Such neighbors now go too. Flat clouds also left points outside the hull, because
+points dropped as nearly on a face were never looked at again, and merged faces could have
+reflex corners. A single point far from the origin recursed forever, since the slab didn't
+grow with the tolerance. Apart from hulls far from the origin, the fuzz cases all come out
+convex now, with every point inside.
+
+Meshes had ghost contacts on flat interior edges. Whether a contact was on an edge or the
+face came from the triangle feature closest to the deepest point, and for an edge contact
+that point lies right on the edge, so rounding often called it the face and the tilted
+normal stayed. On a flat grid, up to two thirds of box and cylinder poses got a tilted
+manifold at 10 mm overlap. The feature now comes from the triangle's support along the
+normal, and there are none.
+
+That made landing on hilly terrain sink twice as deep. The ghosts had been propping boxes
+up in the valleys, and the face contact that replaced them only kept points at the deep
+end, so the box rocked. A mesh group now picks its spread from every point predicted to
+penetrate. On the test terrain the deepest point per frame while things land averaged
+10 mm, and now 3.5 mm.
+
+Cylinder side lines tilted against the normal reported the gap where the two segments pass
+closest, which is about zero when they cross, even 86 mm into a box. They report how far
+their ends reach now. Deep cylinder overlaps went wrong the other way, up to 0.44 m too
+deep, since past the core shrink there are no GJK directions. In deep overlaps the best
+axis now climbs while the gap grows.
+
+Meshes drop vertices that aren't finite, which made the sorts undefined, and slivers whose
+widest corner has a sine under 1e-3.
+
 ## 2026-10-27 22:13
 
 Exact cylinders. The 24-sided prisms bobbed and lost speed on every side, which shows on
