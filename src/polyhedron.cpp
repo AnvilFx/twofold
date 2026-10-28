@@ -20,6 +20,7 @@ Polyhedron makePolyhedron(std::vector<Vec3> vertices, const std::vector<std::vec
 
     std::map<std::pair<int, int>, int> directed;
     for (const std::vector<int>& loop : faces) {
+        if (loop.size() < 3) { continue; }
         Polyhedron::Face f;
         f.first = (int)p.indices.size();
         f.count = (int)loop.size();

@@ -1,4 +1,6 @@
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 #include "test.h"
 #include "twofold/twofold.h"
@@ -50,6 +52,66 @@ bool wellFormed(const HullMesh& h, float tol) {
     }
     const int edges = (int)corners / 2;
     return (int)h.vertices.size() - edges + (int)h.faces.size() == 2;
+}
+
+struct Random {
+    uint32_t s = 0x2545f491u;
+
+    float next() {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        return (float)(s & 0xffffff) / 8388608.0f - 1.0f;
+    }
+    Vec3 onSphere() {
+        const float a = next() * kPi, b = next() * 0.5f * kPi;
+        return { std::cos(a) * std::cos(b), std::sin(a) * std::cos(b), std::sin(b) };
+    }
+};
+
+// Twice the tolerance computeHull works to.
+float slack(const std::vector<Vec3>& points) {
+    Vec3 lo = points[0], hi = points[0];
+    for (const Vec3& p : points) {
+        lo = minVec(lo, p);
+        hi = maxVec(hi, p);
+    }
+    float reach = 0.0f;
+    for (int k = 0; k < 3; ++k) { reach += std::fmax(std::fabs(lo[k]), std::fabs(hi[k])); }
+    return 2.0f * std::fmax(1e-4f * length(hi - lo), 3.6e-7f * reach);
+}
+
+Vec3 faceNormal(const HullMesh& h, const std::vector<int>& f) {
+    Vec3 n;
+    for (size_t i = 0; i < f.size(); ++i) { n += cross(h.vertices[f[i]], h.vertices[f[(i + 1) % f.size()]]); }
+    return normalize(n);
+}
+
+// Every point lies behind every face.
+bool holds(const HullMesh& h, const std::vector<Vec3>& points, float tol) {
+    for (const std::vector<int>& f : h.faces) {
+        const Vec3 n = faceNormal(h, f);
+        const float offset = dot(n, h.vertices[f[0]]);
+        for (const Vec3& p : points) {
+            if (dot(n, p) - offset > tol) { return false; }
+        }
+    }
+    return true;
+}
+
+// No face outline bends inward at a corner.
+bool convexCorners(const HullMesh& h, float tol) {
+    for (const std::vector<int>& f : h.faces) {
+        const Vec3 n = faceNormal(h, f);
+        const size_t c = f.size();
+        for (size_t i = 0; i < c; ++i) {
+            const Vec3& a = h.vertices[f[i]];
+            const Vec3& b = h.vertices[f[(i + 1) % c]];
+            const Vec3& d = h.vertices[f[(i + 2) % c]];
+            if (dot(cross(b - a, d - b), n) < -tol * length(d - a)) { return false; }
+        }
+    }
+    return true;
 }
 
 float deepestContact(const World& w) {
@@ -225,4 +287,82 @@ TEST(hulls_stack_on_each_other) {
     for (int i = 0; i < 300; ++i) { w.step(kDt); }
     CHECK_NEAR(w.position(stack.back()).y, 2.75f, 0.03f);
     CHECK(std::fabs(w.position(stack.back()).x) < 0.05f);
+}
+
+TEST(flattened_clouds_give_convex_hulls_holding_every_point) {
+    Random r;
+    for (int i = 0; i < 100; ++i) {
+        std::vector<Vec3> points;
+        for (int k = 0; k < 20 + 3 * i; ++k) {
+            Vec3 p = r.onSphere();
+            p.z *= 0.05f;
+            points.push_back(p);
+        }
+        const HullMesh h = computeHull(points, 1000);
+        CHECK(wellFormed(h, slack(points)));
+        CHECK(holds(h, points, slack(points)));
+    }
+}
+
+TEST(round_clouds_give_convex_hulls) {
+    Random r;
+    for (int i = 0; i < 300; ++i) {
+        std::vector<Vec3> points;
+        for (int k = 0; k < 4 + i % 61; ++k) { points.push_back(r.onSphere()); }
+        const HullMesh h = computeHull(points, 1000);
+        CHECK(wellFormed(h, slack(points)));
+        CHECK(holds(h, points, slack(points)));
+    }
+}
+
+TEST(merged_faces_of_box_clouds_stay_convex) {
+    Random r;
+    for (int i = 0; i < 200; ++i) {
+        std::vector<Vec3> points;
+        for (int k = 0; k < 8 + i % 100; ++k) {
+            Vec3 p{ r.next(), r.next(), r.next() };
+            const int side = k % 3;
+            p[side] = p[side] < 0.0f ? -1.0f : 1.0f;
+            points.push_back(p);
+        }
+        const HullMesh h = computeHull(points, 1000);
+        CHECK(convexCorners(h, slack(points)));
+        CHECK(wellFormed(h, slack(points)));
+    }
+}
+
+TEST(flat_clouds_stay_inside_their_hulls) {
+    Random r;
+    for (int i = 0; i < 400; ++i) {
+        std::vector<Vec3> points;
+        for (int k = 0; k < 3 + i % 100; ++k) { points.push_back({ r.next(), r.next(), 0.0f }); }
+        const HullMesh h = computeHull(points, 1000);
+        CHECK(wellFormed(h, slack(points)));
+        CHECK(holds(h, points, slack(points)));
+    }
+}
+
+TEST(lone_points_far_out_give_small_hulls) {
+    for (const Vec3& p : { Vec3{ 1e4f, 0, 0 }, Vec3{ -3e5f, 2e5f, 7e4f } }) {
+        HullMesh h = computeHull({ p, p + Vec3{ 0, 1e-3f, 0 } });
+        CHECK(!h.vertices.empty());
+        for (Vec3& v : h.vertices) {
+            v -= p;
+            CHECK(length(v) < 1e-3f * length(p));
+        }
+        CHECK(wellFormed(h, slack(h.vertices)));
+    }
+}
+
+TEST(non_finite_points_are_ignored) {
+    std::vector<Vec3> points;
+    for (int i = 0; i < 8; ++i) { points.push_back({ i & 1 ? 0.5f : -0.5f, i & 2 ? 0.5f : -0.5f, i & 4 ? 0.5f : -0.5f }); }
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    points.insert(points.begin() + 3, { nan, 0, 0 });
+    points.push_back({ 0, -inf, 0 });
+    const HullMesh h = computeHull(points);
+    CHECK(h.vertices.size() == 8);
+    CHECK(h.faces.size() == 6);
+    CHECK(wellFormed(h, 1e-5f));
+    CHECK(computeHull({ { nan, nan, nan } }).vertices.empty());
 }

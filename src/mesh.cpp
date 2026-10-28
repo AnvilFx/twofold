@@ -12,6 +12,11 @@ constexpr int kLeafSize = 4;
 // A neighbor folding away by less than this sine leaves the shared edge without a normal of its own.
 constexpr float kFlatEdge = 0.087f;
 
+// A triangle whose widest corner has a smaller sine is a sliver, its normal left to rounding.
+constexpr float kSliver = 1e-3f;
+
+bool isFinite(const Vec3& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+
 bool lessXyz(const Vec3& a, const Vec3& b) {
     if (a.x != b.x) { return a.x < b.x; }
     if (a.y != b.y) { return a.y < b.y; }
@@ -118,14 +123,17 @@ TriangleMesh::TriangleMesh(const std::vector<Vec3>& vertices, const std::vector<
     : data_(std::make_unique<Data>()) {
     Data& d = *data_;
 
-    std::vector<uint32_t> sorted(vertices.size());
-    for (uint32_t i = 0; i < sorted.size(); ++i) { sorted[i] = i; }
+    std::vector<uint32_t> sorted;
+    sorted.reserve(vertices.size());
+    for (uint32_t i = 0; i < (uint32_t)vertices.size(); ++i) {
+        if (isFinite(vertices[i])) { sorted.push_back(i); }
+    }
     std::sort(sorted.begin(), sorted.end(), [&](uint32_t a, uint32_t b) {
         if (lessXyz(vertices[a], vertices[b])) { return true; }
         if (lessXyz(vertices[b], vertices[a])) { return false; }
         return a < b;
     });
-    std::vector<uint32_t> first(vertices.size());
+    std::vector<uint32_t> first(vertices.size(), UINT32_MAX);
     for (size_t i = 0; i < sorted.size(); ++i) {
         const bool same = i > 0 && !lessXyz(vertices[sorted[i - 1]], vertices[sorted[i]]);
         first[sorted[i]] = same ? first[sorted[i - 1]] : sorted[i];
@@ -137,15 +145,25 @@ TriangleMesh::TriangleMesh(const std::vector<Vec3>& vertices, const std::vector<
         uint32_t v[3];
         bool valid = true;
         for (int k = 0; k < 3; ++k) {
-            if (indices[t + k] >= vertices.size()) {
+            if (indices[t + k] >= vertices.size() || first[indices[t + k]] == UINT32_MAX) {
                 valid = false;
                 break;
             }
             v[k] = first[indices[t + k]];
         }
         if (!valid || v[0] == v[1] || v[1] == v[2] || v[2] == v[0]) { continue; }
-        const Vec3 e1 = vertices[v[1]] - vertices[v[0]], e2 = vertices[v[2]] - vertices[v[0]];
-        if (lengthSquared(cross(e1, e2)) <= 1e-12f * lengthSquared(e1) * lengthSquared(e2)) { continue; }
+        int wide = 0;
+        float longest = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+            const float opposite = lengthSquared(vertices[v[(k + 2) % 3]] - vertices[v[(k + 1) % 3]]);
+            if (opposite > longest) {
+                longest = opposite;
+                wide = k;
+            }
+        }
+        const Vec3 e1 = vertices[v[(wide + 1) % 3]] - vertices[v[wide]];
+        const Vec3 e2 = vertices[v[(wide + 2) % 3]] - vertices[v[wide]];
+        if (!(lengthSquared(cross(e1, e2)) > kSliver * kSliver * lengthSquared(e1) * lengthSquared(e2))) { continue; }
         for (int k = 0; k < 3; ++k) {
             if (remap[v[k]] == UINT32_MAX) {
                 remap[v[k]] = (uint32_t)d.vertices.size();

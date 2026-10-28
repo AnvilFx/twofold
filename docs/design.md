@@ -83,13 +83,20 @@ with locks. See [decision 1](decisions/0001-planar-bodies-are-locked-3d-bodies.m
 
 See [decision 21](decisions/0021-cylinders-are-exact-in-3d.md) for how cylinders collide.
 
-A `TriangleMesh` merges vertices at the same position and drops triangles whose corners
-are nearly collinear. Its tree splits at the median of the triangle centers along their
-widest axis, down to four triangles a leaf. Each triangle keeps its normal and six edge
-flags, one per edge and side. An edge has a normal of its own on a side when the neighbor
-folds away from that side by more than a sine of 0.087, and on both sides when it is open
-or shared by more than two triangles. Meshes have no mass and don't collide with each
-other or with half-spaces.
+Boxes and prisms are cleaned when the shape is built, and `geometry` returns the cleaned
+values. Negative half extents flip, and non-finite values are dropped or set to zero. A
+prism polygon that repeats points, has collinear corners, is not convex or winds more than
+once is replaced by its convex outline. A box or prism with no thickness in some direction
+gets the same slab `computeHull` gives a flat cloud, so every polyhedron has volume and
+every face has a normal.
+
+A `TriangleMesh` merges vertices at the same position, drops vertices that are not finite,
+and drops triangles whose widest corner has a sine under 1e-3. Its tree splits at the
+median of the triangle centers along their widest axis, down to four triangles a leaf.
+Each triangle keeps its normal and six edge flags, one per edge and side. An edge has a
+normal of its own on a side when the neighbor folds away from that side by more than a
+sine of 0.087, and on both sides when it is open or shared by more than two triangles.
+Meshes have no mass and don't collide with each other or with half-spaces.
 
 Every polyhedron keeps vertices, face loops, face planes, its bounds, and an edge list with
 the two faces on each edge. Each edge also stores its length and its arc on the Gauss map,
@@ -99,7 +106,15 @@ the cross of its two face normals. The edge list is what the SAT edge queries wa
 always taking the point farthest outside the current hull, so a limited hull keeps the
 corners that matter most. Faces whose normals are within a cosine of 0.9998 merge into one
 polygon. A flat, collinear or single-point cloud is thickened into a thin slab first, so
-every hull has volume.
+every hull has volume. The slab is at least ten times the build tolerance, which grows
+with distance from the origin, and a cloud is thickened at most once. Non-finite points are
+skipped.
+
+A face next to the visible region is also removed when the new face over their shared edge
+would be a sliver or fold back past the tolerance. Points dropped while just above a face
+are tested again against the finished hull, and a merged face whose outline is not convex
+is grown again one triangle at a time. The result is convex within the tolerance and holds
+every input point.
 
 ## The step
 
@@ -175,9 +190,13 @@ See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
   beats every feature axis, which happens where a rim meets an edge or another rim. Each
   side then offers a feature along the normal: a cap as 24 rim points, the line of the
   side, a polyhedron face, or its one or two deepest vertices. A face clips the other
-  feature, and two lines touch at their closest points or along their overlap. A spinning
-  cylinder also offers the side lines next to the one touching, so the next one to land
-  is already in the manifold.
+  feature, and two lines touch along their overlap, or at their closest points with the
+  depth their ends reach along the normal. A spinning cylinder also offers the side lines
+  next to the one touching, so the next one to land is already in the manifold. In an
+  overlap deeper than twice the speculative distance the GJK directions are rough or
+  missing, so the best axis then climbs by small turns while the gap grows, starting from
+  itself and from each cylinder's cap normal and side direction. No direction gives more
+  gap than the shapes really have, so the climb never overshoots.
 - **Meshes** collide with each triangle whose bounds reach the other shape, in the mesh's
   frame. See below.
 
@@ -203,15 +222,22 @@ of a triangle edge on the Gauss map is the half circle from the front normal thr
 edge's outward direction to the back normal. A sphere takes the closest point on the
 triangle.
 
-When a contact's normal is off the triangle's normal, the triangle feature closest to its
-deepest point is found. If that edge or corner has no normal of its own on the side the
-body is on, the contact is made again as a face contact on that side. If any of its points
-is deeper than SAT found the shapes to overlap, the contact belongs to a neighbor and is
-dropped. A sphere's contact on such a feature is dropped unless the sphere's center lies
-over the face. See [decision 19](decisions/0019-meshes-collide-one-triangle-at-a-time.md).
+When a contact's normal is off the triangle's normal, the triangle feature it touches is
+the one reaching farthest along that normal, an edge when its far corner is within slop.
+The deepest contact point is a poor guide, since on an edge contact it lies on the edge
+and rounding puts it on the face as often as not. If that edge or corner has no normal of
+its own, neither on the side the body is on nor on the side the normal leans to, the
+contact is made again as a face contact on the side the body is on. If any of its points
+is deeper than SAT found the shapes to overlap and lies outside the triangle, the contact
+belongs to a neighbor and is dropped. A sphere's contact on such a feature is dropped
+unless the sphere's center lies over the face. See
+[decision 19](decisions/0019-meshes-collide-one-triangle-at-a-time.md).
 
 Contacts from triangles whose normals are within a cosine of 0.996 merge under the normal
-of the deepest one and are reduced to four points. Each group becomes its own contact.
+of the deepest one and are reduced to four points. Each group becomes its own contact. In
+a group the spread is picked among every point predicted to penetrate, not only those near
+the deepest. On a curved patch the deepest points all sit at one end, and a manifold of
+only those lets the body seesaw.
 
 ### The planar path
 
@@ -440,3 +466,10 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   deep for 8 to 12 frames before they recover. This also happens without the mid-step
   refresh. Pushing deep pairs out harder fixes it but keeps some hull piles from ever
   sleeping.
+- Cylinder pairs overlapping by less than 4 cm keep the feature axis estimate, which in
+  rare poses is off by up to 30 mm.
+- A hull built thousands of units from the origin can have faces off by more than the
+  tolerance, since the face planes come from absolute coordinates. Build hulls around the
+  body and place them with the body's pose.
+- Spheres and cylinders with a radius or height of zero, below zero or not finite are not
+  cleaned up.

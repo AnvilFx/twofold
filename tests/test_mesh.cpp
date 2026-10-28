@@ -1,4 +1,5 @@
 #include <cmath>
+#include <limits>
 #include <memory>
 
 #include "test.h"
@@ -93,6 +94,32 @@ TEST(mesh_merges_vertices_and_drops_degenerate_triangles) {
     CHECK(mesh.triangleCount() == 2);
     CHECK(mesh.vertices().size() == 4);
     CHECK(mesh.indices().size() == 6);
+}
+
+// The sliver's corners are nearly in line. The strip is long and narrow but has a right angle.
+TEST(mesh_drops_slivers_and_keeps_thin_triangles) {
+    const std::vector<Vec3> v = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 0, 1 }, { 1, 0, 1 }, { 2, 0, 0 }, { 3, 0, 0 },
+                                  { 4, 0, 0.0002f }, { 2005, 0, 0 }, { 5, 0, 0 }, { 5, 0, 1 } };
+    const std::vector<uint32_t> idx = { 0, 2, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    const TriangleMesh mesh(v, idx);
+    CHECK(mesh.triangleCount() == 3);
+    CHECK(mesh.vertices().size() == 7);
+}
+
+TEST(mesh_drops_triangles_with_non_finite_vertices) {
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    const std::vector<Vec3> v = { { nan, 0, 0 }, { -1, 0, -1 }, { -1, 0, 1 }, { 1, 0, -1 }, { 1, 0, 1 }, { 0, inf, 0 },
+                                  { 0, 0, nan } };
+    const std::vector<uint32_t> idx = { 1, 2, 3, 3, 2, 4, 0, 1, 2, 2, 5, 4, 6, 3, 4, 0, 6, 5 };
+    auto mesh = std::make_shared<TriangleMesh>(v, idx);
+    CHECK(mesh->triangleCount() == 2);
+    CHECK(mesh->vertices().size() == 4);
+    for (const Vec3& p : mesh->vertices()) { CHECK(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)); }
+    World w;
+    addMesh(w, mesh);
+    const BodyId box = addBody(w, { 0, 1, 0 }, Box{ { 0.25f, 0.25f, 0.25f } });
+    run(w, 120);
+    CHECK_NEAR(w.position(box).y, 0.25f, 0.01f);
 }
 
 TEST(box_rests_on_a_mesh_floor) {
@@ -265,6 +292,66 @@ TEST(contacts_on_hilly_mesh_stay_shallow) {
         }
     }
     CHECK(deepest < 0.05f);
+}
+
+TEST(contacts_on_sharp_mesh_ridges_stay_shallow) {
+    World w;
+    addMesh(w, grid(16, 0.5f, [](float x, float z) { return std::sin(3.0f * x) * std::cos(2.5f * z); }));
+    for (int i = 0; i < 16; ++i) {
+        const Vec3 p{ -3.0f + 2.0f * (float)(i % 4), 2.5f + 0.5f * (float)(i / 4), -3.0f + 2.0f * (float)(i / 4) };
+        Geometry g = Sphere{ 0.3f };
+        if (i % 4 == 1) { g = Box{ { 0.3f, 0.2f, 0.25f } }; }
+        if (i % 4 == 2) { g = Hull{ { { 0.3f, 0, 0 }, { -0.3f, 0, 0 }, { 0, 0.3f, 0 }, { 0, -0.3f, 0 }, { 0, 0, 0.3f }, { 0, 0, -0.3f } } }; }
+        if (i % 4 == 3) { g = Cylinder{ 0.25f, 0.3f }; }
+        addBody(w, p, g);
+    }
+    float deepest = 0.0f;
+    for (int step = 0; step < 300; ++step) {
+        w.step(kDt);
+        for (const ContactInfo& ci : w.contacts()) {
+            for (int k = 0; k < ci.pointCount; ++k) { deepest = std::fmax(deepest, -ci.separations[k]); }
+        }
+    }
+    CHECK(deepest < 0.03f);
+}
+
+TEST(bodies_touching_a_flat_mesh_get_its_normal) {
+    World w;
+    w.setGravity({});
+    const BodyId floor = addMesh(w, grid(64, 0.5f));
+    auto hash = [](int k) {
+        const float s = std::sin(12.9898f * (float)k + 78.233f) * 43758.547f;
+        return s - std::floor(s);
+    };
+    for (int i = 0; i < 400; ++i) {
+        const Quat q = normalize(Quat{ hash(8 * i) - 0.5f, hash(8 * i + 1) - 0.5f, hash(8 * i + 2) - 0.5f, hash(8 * i + 3) - 0.5f });
+        float lowest = 0.0f;
+        if (i % 2 == 0) {
+            const Vec3 axis = q.rotate({ 0, 0, 1 });
+            lowest = -0.4f * std::fabs(axis.y) - 0.3f * std::sqrt(std::fmax(1.0f - axis.y * axis.y, 0.0f));
+        } else {
+            for (int k = 0; k < 8; ++k) {
+                const Vec3 v{ k & 1 ? 0.5f : -0.5f, k & 2 ? 0.3f : -0.3f, k & 4 ? 0.2f : -0.2f };
+                lowest = std::fmin(lowest, q.rotate(v).y);
+            }
+        }
+        BodyDesc bd;
+        bd.position = { -14.25f + 1.5f * (float)(i % 20) + hash(8 * i + 4) - 0.5f, -lowest - 0.001f - 0.059f * hash(8 * i + 5),
+                        -14.25f + 1.5f * (float)(i / 20) + hash(8 * i + 6) - 0.5f };
+        bd.rotation = q;
+        const BodyId b = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = i % 2 == 0 ? Geometry{ Cylinder{ 0.3f, 0.4f } } : Geometry{ Box{ { 0.5f, 0.3f, 0.2f } } };
+        w.addShape(b, sd);
+    }
+    w.step(kDt);
+    int touching = 0;
+    for (const ContactInfo& ci : w.contacts()) {
+        if (ci.bodyA != floor && ci.bodyB != floor) { continue; }
+        ++touching;
+        CHECK(std::fabs(ci.normal.y) > 0.9999f);
+    }
+    CHECK(touching == 400);
 }
 
 TEST(planar_body_stays_in_its_plane_on_a_mesh) {
