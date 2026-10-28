@@ -14,6 +14,14 @@ constexpr float kAligned = 0.9999f;
 
 constexpr int kSettleIterations = 2;
 
+constexpr float kPi = 3.14159265358979f;
+
+// Sine of half a swing limit. Limits are kept above zero so the cone has a direction to push along.
+float coneSine(float swing) {
+    if (swing >= kPi) { return 1.0f; }
+    return std::sin(0.5f * maxf(swing, 1e-3f));
+}
+
 // How far past its bounds a shape's leaf in the tree reaches, in meters.
 constexpr float kTreeMargin = 0.1f;
 
@@ -145,6 +153,7 @@ struct World::Impl {
     std::vector<uint32_t> refitted;
     std::vector<Joint> joints;
     std::vector<uint32_t> freeJoints;
+    std::vector<uint32_t> brokenJoints;
     // Body pairs held by a joint that keeps them from colliding, sorted.
     std::vector<uint64_t> joinedPairs;
     // What links each body to others for waking: links[linkStart[i]] up to links[linkStart[i + 1]]. Built
@@ -304,6 +313,25 @@ struct World::Impl {
     }
 
     BodyId bodyId(uint32_t i) const { return { i, bodies[i].generation }; }
+
+    JointInfo jointInfo(uint32_t i) const {
+        const Joint& j = joints[i];
+        const Body& a = end(j.bodyA);
+        const Body& b = end(j.bodyB);
+        JointInfo info;
+        info.joint = { i, j.generation };
+        info.type = j.type;
+        if (j.bodyA != kWorldBody) { info.bodyA = bodyId(j.bodyA); }
+        info.bodyB = bodyId(j.bodyB);
+        info.anchorA = a.xf.apply(j.localA);
+        info.anchorB = b.xf.apply(j.localB);
+        info.axis = a.xf.q.rotate(j.axisA);
+        info.value = jointValue(j, a, b);
+        info.force = j.force;
+        info.torque = j.torque;
+        info.broken = j.broken;
+        return info;
+    }
     ShapeId shapeId(uint32_t i) const { return { i, shapes[i].generation }; }
 
     ContactEvent contactEvent(const Contact& c, bool begin) const {
@@ -541,7 +569,7 @@ struct World::Impl {
 
     // A contact links its bodies while it has points.
     bool linked(const Link& l) const {
-        if (l.joint != UINT32_MAX) { return joints[l.joint].alive; }
+        if (l.joint != UINT32_MAX) { return joints[l.joint].alive && !joints[l.joint].broken; }
         auto it = std::lower_bound(contacts.begin(), contacts.end(), l.key,
                                    [](const Contact& x, uint64_t k) { return x.key < k; });
         for (; it != contacts.end() && it->key == l.key; ++it) {
@@ -975,7 +1003,7 @@ struct World::Impl {
             }
         }
         for (const Joint& j : joints) {
-            if (!j.alive) { continue; }
+            if (!j.alive || j.broken) { continue; }
             Body& a = end(j.bodyA);
             Body& b = end(j.bodyB);
             const bool da = a.type == MotionType::Dynamic && a.awake;
@@ -1303,6 +1331,27 @@ struct World::Impl {
         sensorPairs.swap(found);
     }
 
+    // Turns the impulses each active joint applied over the step into a force and torque, and breaks the joints
+    // past their limits, which then leave active.
+    void breakJoints(std::vector<uint32_t>& active, float dt) {
+        size_t kept = 0;
+        for (uint32_t ji : active) {
+            Joint& j = joints[ji];
+            j.force = j.force / dt;
+            j.torque = j.torque / dt;
+            if (length(j.force) > j.breakForce || length(j.torque) > j.breakTorque) {
+                j.broken = true;
+                j.linearImpulse = j.angularImpulse = j.frictionTurn = Vec3{};
+                j.axialImpulse = j.motorImpulse = j.lowerImpulse = j.upperImpulse = 0.0f;
+                j.frictionImpulse = j.swingImpulse = 0.0f;
+                brokenJoints.push_back(ji);
+                continue;
+            }
+            active[kept++] = ji;
+        }
+        active.resize(kept);
+    }
+
     void step(float dt) {
         if (dt <= 0.0f) { return; }
         const Clock::time_point start = Clock::now();
@@ -1314,11 +1363,12 @@ struct World::Impl {
         sensorEvents.swap(queuedSensorEvents);
         queuedSensorEvents.clear();
         hitEvents.clear();
+        brokenJoints.clear();
         const size_t queued = contactEvents.size();
 
         std::vector<uint32_t> pulled;
         for (const Joint& j : joints) {
-            if (!j.alive) { continue; }
+            if (!j.alive || j.broken) { continue; }
             const Body& a = end(j.bodyA);
             const Body& b = end(j.bodyB);
             if (a.type == MotionType::Dynamic && !a.awake && movingAwake(b)) { pulled.push_back(j.bodyA); }
@@ -1358,7 +1408,7 @@ struct World::Impl {
         std::vector<uint32_t> activeJoints;
         for (uint32_t i = 0; i < joints.size(); ++i) {
             const Joint& j = joints[i];
-            if (!j.alive) { continue; }
+            if (!j.alive || j.broken) { continue; }
             const Body& a = end(j.bodyA);
             const Body& b = end(j.bodyB);
             if ((a.type == MotionType::Dynamic && a.awake) || (b.type == MotionType::Dynamic && b.awake)) {
@@ -1378,6 +1428,7 @@ struct World::Impl {
 
         const Clock::time_point solveStart = Clock::now();
         axes.resize(4 * contacts.size());
+        for (uint32_t ji : activeJoints) { joints[ji].force = joints[ji].torque = Vec3{}; }
         SolverData data{ bodies, contacts, axes, joints, worldBody };
         prepareContacts(data, active);
         const std::vector<uint32_t> impact = impactContacts(active, ctx.restitutionThreshold);
@@ -1398,6 +1449,7 @@ struct World::Impl {
         }
         applyRestitution(data, active, ctx);
         if (!activeJoints.empty()) {
+            breakJoints(activeJoints, dt);
             settleJoints(data, activeJoints, kSettleIterations);
             for (Body& b : bodies) {
                 if (b.alive && b.type == MotionType::Dynamic && b.awake) { updateInverseMass(b); }
@@ -1958,11 +2010,14 @@ JointId World::createJoint(const JointDesc& d) {
     j.bodyA = ai;
     j.bodyB = d.bodyB.index;
     j.collideConnected = d.collideConnected;
+    j.breakForce = d.breakForce;
+    j.breakTorque = d.breakTorque;
     j.userData = d.userData;
 
     const Body& a = w.end(j.bodyA);
     const Body& b = w.end(j.bodyB);
     Vec3 anchorA, anchorB, axis{ 1, 0, 0 };
+    Vec3 normal;
     if (const PointJoint* pj = std::get_if<PointJoint>(&d.kind)) {
         anchorA = anchorB = pj->anchor;
     } else if (const FixedJoint* fj = std::get_if<FixedJoint>(&d.kind)) {
@@ -1975,6 +2030,7 @@ JointId World::createJoint(const JointDesc& d) {
         j.upper = hj->upperAngle;
         j.motorSpeed = hj->motorSpeed;
         j.maxMotor = hj->maxMotorTorque;
+        j.maxFriction = hj->frictionTorque;
     } else if (const SliderJoint* sj = std::get_if<SliderJoint>(&d.kind)) {
         anchorA = anchorB = sj->anchor;
         axis = normalize(sj->axis);
@@ -1983,6 +2039,7 @@ JointId World::createJoint(const JointDesc& d) {
         j.upper = sj->upperTranslation;
         j.motorSpeed = sj->motorSpeed;
         j.maxMotor = sj->maxMotorForce;
+        j.maxFriction = sj->frictionForce;
     } else if (const DistanceJoint* dj = std::get_if<DistanceJoint>(&d.kind)) {
         anchorA = dj->anchorA;
         anchorB = dj->anchorB;
@@ -1992,6 +2049,16 @@ JointId World::createJoint(const JointDesc& d) {
         j.limited = dj->limited;
         j.lower = dj->minDistance;
         j.upper = dj->maxDistance;
+    } else if (const SwingTwistJoint* tj = std::get_if<SwingTwistJoint>(&d.kind)) {
+        anchorA = anchorB = tj->anchor;
+        axis = normalize(tj->axis);
+        normal = tj->normal;
+        j.limited = tj->upperTwist - tj->lowerTwist < 2.0f * kPi;
+        j.lower = tj->lowerTwist;
+        j.upper = tj->upperTwist;
+        j.swingY = coneSine(tj->swingY);
+        j.swingZ = coneSine(tj->swingZ);
+        j.maxFriction = tj->frictionTorque;
     }
     const Vec3 ref = perpendicular(axis);
     j.localA = a.xf.applyInverse(anchorA);
@@ -2001,6 +2068,18 @@ JointId World::createJoint(const JointDesc& d) {
     j.refA = a.xf.q.unrotate(ref);
     j.refB = b.xf.q.unrotate(ref);
     j.restTurn = a.xf.q.conjugate() * b.xf.q;
+    if (j.type == JointType::SwingTwist) {
+        Vec3 y = normal - axis * dot(normal, axis);
+        y = lengthSquared(y) > 1e-12f ? normalize(y) : ref;
+        const Vec3 z = cross(axis, y);
+        Mat3 m;
+        m.r[0] = { axis.x, y.x, z.x };
+        m.r[1] = { axis.y, y.y, z.y };
+        m.r[2] = { axis.z, y.z, z.z };
+        const Quat frame = fromMat3(m);
+        j.frameA = normalize(a.xf.q.conjugate() * frame);
+        j.frameB = normalize(b.xf.q.conjugate() * frame);
+    }
 
     if (!j.collideConnected && ai != kWorldBody) {
         auto between = [&](const Contact& c) {
@@ -2030,7 +2109,7 @@ void World::setJointLimits(JointId id, bool limited, float lower, float upper) {
     Impl& w = *impl_;
     Joint* j = w.get(id);
     if (!j) { return; }
-    j->limited = limited;
+    j->limited = limited && (j->type != JointType::SwingTwist || upper - lower < 2.0f * kPi);
     j->lower = lower;
     j->upper = upper;
     j->lowerImpulse = 0.0f;
@@ -2056,24 +2135,53 @@ void World::setJointSpring(JointId id, float hertz, float dampingRatio) {
     w.wakeJoint(*j);
 }
 
+void World::setJointFriction(JointId id, float maxFriction) {
+    Impl& w = *impl_;
+    Joint* j = w.get(id);
+    if (!j) { return; }
+    j->maxFriction = maxFriction;
+    if (!(maxFriction > 0.0f)) {
+        j->frictionImpulse = 0.0f;
+        j->frictionTurn = Vec3{};
+    }
+    w.wakeJoint(*j);
+}
+
+void World::setJointSwing(JointId id, float swingY, float swingZ) {
+    Impl& w = *impl_;
+    Joint* j = w.get(id);
+    if (!j) { return; }
+    j->swingY = coneSine(swingY);
+    j->swingZ = coneSine(swingZ);
+    j->swingImpulse = 0.0f;
+    w.wakeJoint(*j);
+}
+
+void World::setJointBreakLimits(JointId id, float force, float torque) {
+    Joint* j = impl_->get(id);
+    if (!j) { return; }
+    j->breakForce = force;
+    j->breakTorque = torque;
+}
+
 std::vector<JointInfo> World::joints() const {
     const Impl& w = *impl_;
     std::vector<JointInfo> out;
     for (uint32_t i = 0; i < w.joints.size(); ++i) {
-        const Joint& j = w.joints[i];
-        if (!j.alive) { continue; }
-        const Body& a = w.end(j.bodyA);
-        const Body& b = w.end(j.bodyB);
-        JointInfo info;
-        info.joint = { i, j.generation };
-        info.type = j.type;
-        if (j.bodyA != kWorldBody) { info.bodyA = w.bodyId(j.bodyA); }
-        info.bodyB = w.bodyId(j.bodyB);
-        info.anchorA = a.xf.apply(j.localA);
-        info.anchorB = b.xf.apply(j.localB);
-        info.axis = a.xf.q.rotate(j.axisA);
-        info.value = jointValue(j, a, b);
-        out.push_back(info);
+        if (w.joints[i].alive) { out.push_back(w.jointInfo(i)); }
+    }
+    return out;
+}
+
+JointInfo World::jointInfo(JointId id) const {
+    return impl_->get(id) ? impl_->jointInfo(id.index) : JointInfo{};
+}
+
+std::vector<JointId> World::brokenJoints() const {
+    const Impl& w = *impl_;
+    std::vector<JointId> out;
+    for (uint32_t i : w.brokenJoints) {
+        if (w.joints[i].alive) { out.push_back({ i, w.joints[i].generation }); }
     }
     return out;
 }

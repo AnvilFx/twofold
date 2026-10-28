@@ -3,6 +3,30 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 19:06
+
+Swing-twist joints, for ragdolls. The swing stays in an elliptical cone and the twist in a
+range. The first limit rows turned about the limb's axis and the swing axis, and a limb
+held at its twist limit tilted out of its cone. The rows follow the exact rates now, the
+spin that changes only the twist and the one that changes the room left in the cone. A
+ragdoll dropped from 10 m, or six piled up, stays together and holds its limits within
+0.002 rad at rest. See [decision 27](decisions/0027-swing-twist-rows-follow-the-exact-rates.md).
+
+Friction on hinges, sliders and swing-twist joints, alongside motors and limits. A hinge
+with only a motor at speed zero did the same, but then it couldn't have a motor too.
+
+`jointInfo` gives the force and torque a joint applied in the last step. Reading the last
+substep alone was 2% high for a hanging body, so it is the sum over the step. Joints break
+past `breakForce` or `breakTorque`, before the settle pass, and `brokenJoints` lists them.
+
+Spheres and cylinders with a radius or height of zero, below zero or not finite are
+cleaned like boxes now.
+
+A hull built 10000 units from its body had normals off by 0.012, and at 100000 units
+quickhull lost points. Hulls are built about their own center. Bench scenes with hulls and
+prisms change hashes, from normals moving by 5e-6 at most. See
+[decision 28](decisions/0028-hulls-are-built-about-their-own-center.md).
+
 ## 2026-10-28 18:43
 
 Contact and sensor events. Before this the only way to know two shapes met was to read

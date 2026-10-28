@@ -83,12 +83,13 @@ with locks. See [decision 1](decisions/0001-planar-bodies-are-locked-3d-bodies.m
 
 See [decision 21](decisions/0021-cylinders-are-exact-in-3d.md) for how cylinders collide.
 
-Boxes and prisms are cleaned when the shape is built, and `geometry` returns the cleaned
-values. Negative half extents flip, and non-finite values are dropped or set to zero. A
-prism polygon that repeats points, has collinear corners, is not convex or winds more than
-once is replaced by its convex outline. A box or prism with no thickness in some direction
-gets the same slab `computeHull` gives a flat cloud, so every polyhedron has volume and
-every face has a normal.
+Every solid shape is cleaned when it is built, and `geometry` returns the cleaned values.
+Negative sizes flip, and non-finite values are dropped or set to zero. A prism polygon
+that repeats points, has collinear corners, is not convex or winds more than once is
+replaced by its convex outline. A box or prism with no thickness in some direction gets
+the same slab `computeHull` gives a flat cloud, so every polyhedron has volume and every
+face has a normal. A sphere with no radius, and a cylinder with no radius or height, get
+that slab too, at least 1e-4.
 
 `setLocalTransform` moves a shape on its body. Like `setGeometry`, it updates the bounds
 and the mass, keeps the shape's contacts from being reused, and wakes the body.
@@ -109,9 +110,14 @@ the cross of its two face normals. The edge list is what the SAT edge queries wa
 always taking the point farthest outside the current hull, so a limited hull keeps the
 corners that matter most. Faces whose normals are within a cosine of 0.9998 merge into one
 polygon. A flat, collinear or single-point cloud is thickened into a thin slab first, so
-every hull has volume. The slab is at least ten times the build tolerance, which grows
-with distance from the origin, and a cloud is thickened at most once. Non-finite points are
-skipped.
+every hull has volume. The slab is at least ten times the tolerance for that check, which
+grows with distance from the origin, and a cloud is thickened at most once. Non-finite
+points are skipped.
+
+The hull is built about the center of the cloud's bounds, to a tolerance of 1e-4 of its
+size, and the mesh keeps the original points. Polyhedron face normals come from Newell's
+method about the centroid. A hull far from the origin keeps its faces as accurate as its
+vertices allow. See [decision 28](decisions/0028-hulls-are-built-about-their-own-center.md).
 
 A face next to the visible region is also removed when the new face over their shared edge
 would be a sliver or fold back past the tolerance. Points dropped while just above a face
@@ -369,16 +375,18 @@ See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md) and
 ## Joints
 
 A joint stores its anchors in each body's local frame, and for a hinge or slider its axis
-in both. An unset body A is the world, a static body at the origin. Values such as the
-hinge angle and slider translation are body B relative to A, zero in the joined pose.
+in both. A swing-twist joint stores its whole frame in both. An unset body A is the world,
+a static body at the origin. Values such as the hinge angle, slider translation and twist
+are body B relative to A, zero in the joined pose.
 
 | Joint | Rows |
 | --- | --- |
 | Point | A 3D point row |
 | Fixed | A 3D turn row, then the point row |
-| Hinge | Motor, limits, a 2D turn row across the axis, then the point row |
-| Slider | Motor, limits, a 3D turn row, then a 2D point row across the axis |
+| Hinge | Friction, motor, limits, a 2D turn row across the axis, then the point row |
+| Slider | Friction, motor, limits, a 3D turn row, then a 2D point row across the axis |
 | Distance | One row along the line between the anchors, rigid, sprung or limited |
+| Swing-twist | 3D friction, twist limits, a swing limit, then the point row |
 
 The point and turn rows are soft, at `jointHertz` and `jointDampingRatio`, capped at half
 the substep rate. Limits only push. Like speculative contacts, they start acting before
@@ -392,6 +400,24 @@ together. A slider's motor and limits likewise carry the turn that keeps the bod
 rotating. Without this a door bounces off its limit. See
 [decision 18](decisions/0018-limits-and-motors-move-the-whole-joint.md).
 
+Friction on a hinge or slider is a motor row with speed zero, clamped to the friction
+torque or force times the substep, and it works alongside the motor and limits. On a
+swing-twist joint it is a 3D turn row clamped by its length.
+
+A swing-twist joint splits body B's turn in A's joint frame into a twist about the frame's
+x axis and a swing that tilts it. The swing limit is an ellipse in the sines of the half
+angles. Twist limits act along the relative spin that changes only the twist, and the
+swing limit along the spin that changes the room left in the ellipse. Both are anchored
+like the hinge's limits. See
+[decision 27](decisions/0027-swing-twist-rows-follow-the-exact-rates.md).
+
+`jointInfo` gives the force a joint applied to body B in its last active step, and the
+torque about anchor B. It is the impulse each row ends a substep's relax pass with, summed
+over the step and divided by it. A joint whose force or torque goes over `breakForce` or
+`breakTorque` breaks after the substeps, before the settle pass. It drops its impulses,
+stops acting and stops tying its bodies into an island. Its handle stays valid and keeps
+its collision filter until it is destroyed, and `brokenJoints` lists it for that step.
+
 The relax pass solves every row rigid. After restitution, two settle iterations move the
 bodies of each active joint directly, turn first, then any exceeded limit, then the point
 or slide, without changing velocities. See
@@ -400,7 +426,8 @@ or slide, without changing velocities. See
 A joint is active when one of its bodies is an awake dynamic body. Joints tie their
 dynamic bodies into one island, so they sleep and wake together, and a moving kinematic
 end keeps the other body awake. Bodies joined directly don't collide unless
-`collideConnected` is set. Changing a joint's limits, motor or spring wakes it.
+`collideConnected` is set. Changing a joint's limits, motor, spring, friction or swing
+wakes it.
 
 ## Continuous collision
 
@@ -612,9 +639,6 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   restitution 0. Up to 500 m/s it stays under 0.6 m/s.
 - Cylinder pairs overlapping by less than 4 cm keep the feature axis estimate, which in
   rare poses is off by up to 30 mm.
-- A hull built thousands of units from the origin can have faces off by more than the
-  tolerance, since the face planes come from absolute coordinates. Build hulls around the
-  body and place them with the body's pose.
-- Spheres and cylinders with a radius or height of zero, below zero or not finite are not
-  cleaned up.
+- A ragdoll piled under other bodies with no friction can be pushed 0.17 rad past its
+  cone and 0.33 rad past its twist range for a moment before the limits recover.
 - `alphaPieces` is quadratic in the number of holes.

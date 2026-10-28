@@ -366,3 +366,41 @@ TEST(non_finite_points_are_ignored) {
     CHECK(wellFormed(h, 1e-5f));
     CHECK(computeHull({ { nan, nan, nan } }).vertices.empty());
 }
+
+TEST(hull_far_from_its_origin_collides_like_one_at_the_origin) {
+    std::vector<Vec3> slab;
+    for (int i = 0; i < 8; ++i) { slab.push_back({ i & 1 ? 2.0f : -2.0f, i & 2 ? 0.0f : -0.2f, i & 4 ? 2.0f : -2.0f }); }
+    const std::vector<Vec3> round = spherePoints(300, 0.5f);
+    float height[2] = {};
+    size_t corners[2] = {};
+    for (int far = 0; far < 2; ++far) {
+        const Vec3 offset = far ? Vec3{ 1e4f, -6e3f, 3e3f } : Vec3{};
+        World w;
+        BodyDesc gd;
+        gd.type = MotionType::Static;
+        gd.position = -offset;
+        const BodyId g = w.createBody(gd);
+        ShapeDesc gs;
+        std::vector<Vec3> points;
+        for (const Vec3& p : slab) { points.push_back(p + offset); }
+        gs.geometry = Hull{ points };
+        w.addShape(g, gs);
+        BodyDesc bd;
+        bd.position = Vec3{ 0, 0.6f, 0 } - offset;
+        const BodyId b = w.createBody(bd);
+        ShapeDesc sd;
+        points.clear();
+        for (const Vec3& p : round) { points.push_back(p + offset); }
+        sd.geometry = Hull{ points };
+        w.addShape(b, sd);
+        corners[far] = computeHull(points).vertices.size();
+        for (int i = 0; i < 120; ++i) {
+            w.step(kDt);
+            for (const ContactInfo& c : w.contacts()) { CHECK(std::fabs(c.normal.y) > 0.9999f); }
+        }
+        CHECK(deepestContact(w) < 0.005f);
+        height[far] = w.centerOfMass(b).y;
+    }
+    CHECK(corners[0] == corners[1]);
+    CHECK(std::fabs(height[0] - height[1]) < 1e-3f);
+}
