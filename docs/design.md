@@ -191,7 +191,10 @@ See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
   each other, turned radial where they are parallel. Two GJK directions join them, one
   between the shapes and one between their cores, each cylinder shrunk by a quarter of its
   smaller dimension and rounded by the same amount. A GJK direction is used only when it
-  beats every feature axis, which happens where a rim meets an edge or another rim. Each
+  beats every feature axis, which happens where a rim meets an edge or another rim. Against
+  a mesh triangle GJK is skipped where it can't change the result: when the triangle is out
+  of reach of the capsule around the cylinder's axis, or when a pair of points found by
+  projecting back and forth between the two is already as close as the best axis. Each
   side then offers a feature along the normal: a cap as 24 rim points, the line of the
   side, a polyhedron face, or its one or two deepest vertices. A face clips the other
   feature, and two lines touch along their overlap, or at their closest points with the
@@ -351,12 +354,12 @@ anything. Pairs listed as fast at the start of the step are collided again halfw
 the substeps. Fast pairs without a planar body are collided again before every substep
 after the first, with the margin covering only the motion left in the step.
 
-Before that, every active contact is rebased. Its anchors become the bodies' current lever
-arms, its stored separation absorbs the distance already moved, and `dp`, `dq` and the
-base orientation of every body reset. New points then take impulses from old points the
-same way as after the narrowphase, and the restitution data of the nearest old point. A
-mesh pair is collided once, and each of its contacts takes the new group whose normal is
-closest to its own.
+Before that, every active contact that isn't collided again is rebased. Its anchors become
+the bodies' current lever arms, its stored separation absorbs the distance already moved,
+and `dp`, `dq` and the base orientation of every body reset. New points then take impulses
+from old points the same way as after the narrowphase, and the restitution data of the
+nearest old point. A mesh pair is collided once, and each of its contacts takes the new
+group whose normal is closest to its own.
 
 See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md) and
 [decision 24](decisions/0024-fast-solid-pairs-collide-every-substep.md).

@@ -53,8 +53,8 @@ struct Planar {
 Vec2 project(const Vec3& p, const Vec3& u, const Vec3& v) { return { dot(p, u), dot(p, v) }; }
 
 void setDepth(Profile& p, float center, float a, float b) {
-    p.zLo = center + std::fmin(a, b);
-    p.zHi = center + std::fmax(a, b);
+    p.zLo = center + minf(a, b);
+    p.zHi = center + maxf(a, b);
 }
 
 void fixWinding(Vec2* poly, size_t n) {
@@ -163,7 +163,7 @@ float maxSeparation(const Polygon& a, const Polygon& b, int& edge) {
     for (size_t i = 0; i < a.size(); ++i) {
         const Vec2 n = edgeNormal(a, i);
         float s = FLT_MAX;
-        for (const Vec2& q : b) { s = std::fmin(s, dot(n, q - a[i])); }
+        for (const Vec2& q : b) { s = minf(s, dot(n, q - a[i])); }
         if (s > best) { best = s; edge = (int)i; }
     }
     return best;
@@ -194,7 +194,7 @@ void collidePolygons(const Polygon& a, const Polygon& b, float margin, float slo
     const Vec2 v22 = inc[(i2 + 1) % inc.size()];
 
     // Separated polygons nearest at two vertices touch along the line between them.
-    if (std::fmax(sa, sb) > 0.1f * slop) {
+    if (maxf(sa, sb) > 0.1f * slop) {
         const SegmentClosest c = closestOnSegments(v11, v12, v21, v22);
         if ((c.s == 0.0f || c.s == 1.0f) && (c.t == 0.0f || c.t == 1.0f)) {
             const float dist = length(c.b - c.a);
@@ -331,8 +331,8 @@ bool collidePlanar(const Shape& a, const Transform& xa, const Shape& b, const Tr
     if (!makeProfile(a, xa, n, u, v, pa) || !makeProfile(b, xb, n, u, v, pb)) { return false; }
     if (pa.kind == ProfileKind::HalfPlane && pb.kind == ProfileKind::HalfPlane) { return false; }
 
-    const float lo = std::fmax(pa.zLo, pb.zLo);
-    const float hi = std::fmin(pa.zHi, pb.zHi);
+    const float lo = maxf(pa.zLo, pb.zLo);
+    const float hi = minf(pa.zHi, pb.zHi);
     if (lo > hi) { return true; }
     const float zMid = 0.5f * (lo + hi);
 

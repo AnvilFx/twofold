@@ -3,6 +3,22 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 04:28
+
+Won back most of what colliding every substep cost, with results bit for bit the same.
+
+Most of Meshes went to GJK between cylinders and terrain triangles. A triangle out of reach
+of the capsule around the cylinder's axis is dropped before it now, and GJK is skipped when
+two points found by projecting back and forth are already as close as the best feature
+axis. That halves the calls. Contacts about to be collided again were rebased first for
+nothing, and MSVC turns `std::fmax` and `std::fmin` into library calls, so `maxf` and
+`minf` do the same inline. A body's extent is kept on the body, and the rebuilt contact
+list keeps its storage between steps.
+
+Over the bench scenes a step took 2.75 ms before the plate fix, 3.61 ms after it, and
+3.01 ms now. Every scene but Meshes is at or under where it was before the fix. Meshes is
+at 1.44 ms against 1.14 ms.
+
 ## 2026-10-28 03:01
 
 A thin plate hitting the ground at 100 m/s or more bounced back up with restitution 0, at

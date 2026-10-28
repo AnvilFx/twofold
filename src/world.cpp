@@ -24,7 +24,7 @@ float millisecondsSince(Clock::time_point start) {
 }
 
 float mixFriction(const MaterialInput& a, const MaterialInput& b) { return std::sqrt(a.value * b.value); }
-float mixRestitution(const MaterialInput& a, const MaterialInput& b) { return std::fmax(a.value, b.value); }
+float mixRestitution(const MaterialInput& a, const MaterialInput& b) { return maxf(a.value, b.value); }
 
 uint64_t pairKey(uint32_t a, uint32_t b) { return ((uint64_t)a << 32) | b; }
 
@@ -133,6 +133,8 @@ struct World::Impl {
     std::vector<Shape> shapes;
     std::vector<uint32_t> freeShapes;
     std::vector<Contact> contacts;
+    // Kept between steps so the rebuilt contact list doesn't allocate.
+    std::vector<Contact> nextContacts;
     std::vector<PointAxes> axes;
     // Every shape but half-spaces, whose bounds are infinite and which are kept apart in planes.
     BoundsTree tree;
@@ -323,18 +325,16 @@ struct World::Impl {
         }
         b.invMass = (b.type == MotionType::Dynamic && b.mass > 0.0f) ? 1.0f / b.mass : 0.0f;
         b.com = b.xf.apply(b.localCenter);
-        updateInverseMass(b);
-    }
-
-    float bodyExtent(const Body& b) const {
-        float e = 0.0f;
+        b.extent = 0.0f;
         for (uint32_t si : b.shapes) {
             const Shape& s = shapes[si];
             if (s.kind == ShapeKind::HalfSpace) { continue; }
-            e = std::fmax(e, s.extent + length(s.local.p - b.localCenter));
+            b.extent = maxf(b.extent, s.extent + length(s.local.p - b.localCenter));
         }
-        return e;
+        updateInverseMass(b);
     }
+
+    float bodyExtent(const Body& b) const { return b.extent; }
 
     float relativeTravel(const Body& a, const Body& b, float dt) const {
         return (length(b.v - a.v) + length(a.w) * bodyExtent(a) + length(b.w) * bodyExtent(b)) * dt;
@@ -639,7 +639,8 @@ struct World::Impl {
         profile.broadphase = millisecondsSince(start);
         const Clock::time_point narrowStart = Clock::now();
 
-        std::vector<Contact> next;
+        std::vector<Contact>& next = nextContacts;
+        next.clear();
         std::vector<uint32_t> toWake;
         std::vector<Manifold> found;
         const float matchSq = tol.speculative * tol.speculative;
@@ -701,7 +702,7 @@ struct World::Impl {
             for (size_t i = first; i < next.size(); ++i) {
                 next[i].friction = frictionMix({ sa.friction, ba.type }, { sb.friction, bb.type });
                 next[i].restitution = restitutionMix({ sa.restitution, ba.type }, { sb.restitution, bb.type });
-                next[i].rollingResistance = std::fmax(sa.rollingResistance, sb.rollingResistance);
+                next[i].rollingResistance = maxf(sa.rollingResistance, sb.rollingResistance);
             }
 
             if (ba.type == MotionType::Dynamic && !ba.awake && movingAwake(bb)) { toWake.push_back(sa.body); }
@@ -784,7 +785,13 @@ struct World::Impl {
 
     // A spinning body carries its contact points away from the overlap, so fast pairs are collided again within the step.
     void refreshContacts(const std::vector<uint32_t>& active, const std::vector<uint32_t>& fast, float remaining) {
+        // Both lists are in contact order. Fast contacts are collided again below.
+        size_t next = 0;
         for (uint32_t ci : active) {
+            if (next < fast.size() && fast[next] == ci) {
+                ++next;
+                continue;
+            }
             Contact& c = contacts[ci];
             rebaseContact(bodies[c.bodyA], bodies[c.bodyB], c, &axes[4 * ci]);
         }
@@ -875,7 +882,7 @@ struct World::Impl {
         const float threshold = settings.sleepThreshold * settings.lengthUnit;
         for (Body& b : bodies) {
             if (!b.alive || b.type != MotionType::Dynamic || !b.awake) { continue; }
-            const float speed = std::fmax(length(b.v), length(b.w) * bodyExtent(b));
+            const float speed = maxf(length(b.v), length(b.w) * bodyExtent(b));
             if (!b.canSleep || speed > threshold) {
                 b.sleepTime = 0.0f;
             } else {
@@ -933,7 +940,7 @@ struct World::Impl {
             b.island = r;
             ++profile.awakeBodies;
             if (r == i) { ++profile.awakeIslands; }
-            islandTime[r] = std::fmin(islandTime[r], b.sleepTime);
+            islandTime[r] = minf(islandTime[r], b.sleepTime);
         }
         for (uint32_t i = 0; i < bodies.size(); ++i) {
             Body& b = bodies[i];
@@ -956,7 +963,7 @@ struct World::Impl {
         float inner = FLT_MAX;
         for (size_t i = 0; i < s.poly.normals.size(); ++i) {
             if (std::fabs(dot(s.poly.normals[i], n)) > 0.9f) { continue; }
-            inner = std::fmin(inner, s.poly.offsets[i] - dot(s.poly.normals[i], s.centroid));
+            inner = minf(inner, s.poly.offsets[i] - dot(s.poly.normals[i], s.centroid));
         }
         return inner < FLT_MAX ? inner : s.minExtent;
     }
@@ -1065,10 +1072,10 @@ struct World::Impl {
                     Vec3 c[3];
                     m->corners(tri, c);
                     float triReach = 0.0f;
-                    for (const Vec3& v : c) { triReach = std::fmax(triReach, length(o.local.apply(v) - bo.localCenter)); }
+                    for (const Vec3& v : c) { triReach = maxf(triReach, length(o.local.apply(v) - bo.localCenter)); }
                     float tt = 1.0f;
                     if (sweep({ c, 3, 0.0f, false }, triReach, tt)) {
-                        t = std::fmin(t, tt);
+                        t = minf(t, tt);
                         hit = true;
                     }
                 });
@@ -1171,10 +1178,10 @@ struct World::Impl {
         SolverContext ctx;
         ctx.h = h;
         ctx.invH = 1.0f / h;
-        const float hertz = std::fmin(settings.contactHertz, 0.25f * ctx.invH);
+        const float hertz = minf(settings.contactHertz, 0.25f * ctx.invH);
         ctx.contactSoft = makeSoft(hertz, settings.contactDampingRatio, h);
         ctx.staticSoft = makeSoft(2.0f * hertz, settings.contactDampingRatio, h);
-        ctx.jointSoft = makeSoft(std::fmin(settings.jointHertz, 0.5f * ctx.invH), settings.jointDampingRatio, h);
+        ctx.jointSoft = makeSoft(minf(settings.jointHertz, 0.5f * ctx.invH), settings.jointDampingRatio, h);
         ctx.maxPushout = settings.maxPushoutSpeed * settings.lengthUnit;
         ctx.restitutionThreshold = settings.restitutionThreshold * settings.lengthUnit;
 

@@ -97,7 +97,7 @@ void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
         }
         if (a.type != MotionType::Dynamic) { ha = 0.0f; }
         if (b.type != MotionType::Dynamic) { hb = 0.0f; }
-        c.rollingRadius = std::fmax(ha, hb) / (float)c.count;
+        c.rollingRadius = maxf(ha, hb) / (float)c.count;
     }
 }
 
@@ -171,7 +171,7 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
             if (sep > 0.0f) {
                 bias = sep * ctx.invH;
             } else if (useBias) {
-                bias = std::fmax(soft.biasRate * sep, -ctx.maxPushout);
+                bias = maxf(soft.biasRate * sep, -ctx.maxPushout);
                 massScale = soft.massScale;
                 impulseScale = soft.impulseScale;
             }
@@ -179,10 +179,10 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
             const Axis& x = axes[i].normal;
             const float vn = speedAlong(a, b, c.normal, x);
             float impulse = -x.mass * massScale * (vn + bias) - impulseScale * p.normalImpulse;
-            const float total = std::fmax(p.normalImpulse + impulse, 0.0f);
+            const float total = maxf(p.normalImpulse + impulse, 0.0f);
             impulse = total - p.normalImpulse;
             p.normalImpulse = total;
-            p.maxNormalImpulse = std::fmax(p.maxNormalImpulse, impulse);
+            p.maxNormalImpulse = maxf(p.maxNormalImpulse, impulse);
             push(a, b, x, impulse);
         }
 
@@ -224,10 +224,10 @@ void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const 
             const Axis& x = axes[i].normal;
             const float vn = speedAlong(a, b, c.normal, x);
             float impulse = -x.mass * (vn + c.restitution * p.relativeVelocity);
-            const float total = std::fmax(p.normalImpulse + impulse, 0.0f);
+            const float total = maxf(p.normalImpulse + impulse, 0.0f);
             impulse = total - p.normalImpulse;
             p.normalImpulse = total;
-            p.maxNormalImpulse = std::fmax(p.maxNormalImpulse, impulse);
+            p.maxNormalImpulse = maxf(p.maxNormalImpulse, impulse);
             push(a, b, x, impulse);
         }
     }
