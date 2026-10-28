@@ -1929,4 +1929,155 @@ bool World::castRay(const Vec3& origin, const Vec3& translation, RayHit& hit, ui
     return found;
 }
 
+namespace {
+
+// Query shapes this close to a shape, in meters, touch it.
+constexpr float kTouching = 1e-5f;
+
+bool convexShape(const Geometry& geometry, Shape& q) {
+    if (std::holds_alternative<HalfSpace>(geometry) || std::holds_alternative<Mesh>(geometry)) { return false; }
+    q.geometry = geometry;
+    buildShape(q);
+    return true;
+}
+
+// Sorts the candidates by shape index and keeps the ones keep accepts.
+template <class Keep>
+bool keepSorted(std::vector<ShapeId>& found, Keep&& keep) {
+    std::sort(found.begin(), found.end(), [](const ShapeId& a, const ShapeId& b) { return a.index < b.index; });
+    found.erase(std::remove_if(found.begin(), found.end(), [&](const ShapeId& id) { return !keep(id.index); }),
+                found.end());
+    return !found.empty();
+}
+
+}
+
+bool World::castRayAll(const Vec3& origin, const Vec3& translation, std::vector<RayHit>& hits, uint32_t mask) const {
+    const Impl& w = *impl_;
+    const Vec3 end = origin + translation;
+    const Vec3 lo = minVec(origin, end), hi = maxVec(origin, end);
+    hits.clear();
+    auto add = [&](uint32_t si) {
+        RayHit h;
+        h.shape.index = si;
+        hits.push_back(h);
+    };
+    for (uint32_t si : w.planes) { add(si); }
+    w.tree.raycast(origin, translation, add);
+    std::sort(hits.begin(), hits.end(), [](const RayHit& a, const RayHit& b) { return a.shape.index < b.shape.index; });
+    size_t kept = 0;
+    for (size_t i = 0; i < hits.size(); ++i) {
+        const uint32_t si = hits[i].shape.index;
+        const Shape& s = w.shapes[si];
+        if (!(s.category & mask) || !boxesOverlap(s.lo, s.hi, lo, hi)) { continue; }
+        const Transform xf = w.bodies[s.body].xf * s.local;
+        float fraction;
+        Vec3 normal;
+        if (!rayShape(s, xf, origin, translation, 1.0f, fraction, normal)) { continue; }
+        RayHit& h = hits[kept++];
+        h.body = w.bodyId(s.body);
+        h.shape = w.shapeId(si);
+        h.point = origin + translation * fraction;
+        h.normal = normal;
+        h.fraction = fraction;
+    }
+    hits.resize(kept);
+    std::sort(hits.begin(), hits.end(), [](const RayHit& a, const RayHit& b) {
+        return a.fraction != b.fraction ? a.fraction < b.fraction : a.shape.index < b.shape.index;
+    });
+    return !hits.empty();
+}
+
+bool World::castGeometry(const Geometry& geometry, const Transform& pose, const Vec3& translation, CastHit& hit,
+                         uint32_t mask) const {
+    const Impl& w = *impl_;
+    Shape q;
+    if (!convexShape(geometry, q)) { return false; }
+    const float touch = kTouching * w.settings.lengthUnit;
+    Vec3 lo, hi;
+    shapeBounds(q, pose, lo, hi);
+    const Vec3 center = (lo + hi) * 0.5f;
+    const Vec3 reach = (hi - lo) * 0.5f + Vec3{ touch, touch, touch };
+    // Shapes are tried in index order, so the lowest index wins a tie.
+    std::vector<uint32_t> near(w.planes);
+    w.tree.boxcast(center, translation, reach, [&](uint32_t si) { near.push_back(si); });
+    std::sort(near.begin(), near.end());
+    float best = 1.0f;
+    bool found = false;
+    for (uint32_t si : near) {
+        if (found && best == 0.0f) { break; }
+        const Shape& s = w.shapes[si];
+        if (!(s.category & mask)) { continue; }
+        if (s.kind != ShapeKind::HalfSpace && !segmentHitsBox(s.lo - reach, s.hi + reach, center, translation, best)) {
+            continue;
+        }
+        const Transform xf = w.bodies[s.body].xf * s.local;
+        float fraction = best;
+        Vec3 point, normal;
+        const Impact r = castShape(s, xf, q, pose, translation, touch, w.tol, fraction, point, normal);
+        if (r == Impact::Miss || (found && fraction >= best)) { continue; }
+        best = fraction;
+        found = true;
+        hit.body = w.bodyId(s.body);
+        hit.shape = w.shapeId(si);
+        hit.point = point;
+        hit.normal = normal;
+        hit.fraction = fraction;
+        hit.initialOverlap = r == Impact::Touching;
+    }
+    return found;
+}
+
+bool World::overlapGeometry(const Geometry& geometry, const Transform& pose, std::vector<ShapeId>& found,
+                            uint32_t mask) const {
+    const Impl& w = *impl_;
+    found.clear();
+    Shape q;
+    if (!convexShape(geometry, q)) { return false; }
+    const float touch = kTouching * w.settings.lengthUnit;
+    Vec3 lo, hi;
+    shapeBounds(q, pose, lo, hi);
+    lo -= Vec3{ touch, touch, touch };
+    hi += Vec3{ touch, touch, touch };
+    for (uint32_t si : w.planes) { found.push_back(w.shapeId(si)); }
+    w.tree.query(lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    return keepSorted(found, [&](uint32_t si) {
+        const Shape& s = w.shapes[si];
+        if (!(s.category & mask)) { return false; }
+        if (s.kind != ShapeKind::HalfSpace && !boxesOverlap(s.lo, s.hi, lo, hi)) { return false; }
+        return shapesOverlap(s, w.bodies[s.body].xf * s.local, q, pose, touch);
+    });
+}
+
+bool World::overlapAabb(const Aabb& box, std::vector<ShapeId>& found, uint32_t mask) const {
+    const Impl& w = *impl_;
+    found.clear();
+    for (uint32_t si : w.planes) { found.push_back(w.shapeId(si)); }
+    w.tree.query(box.lower, box.upper, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    const Vec3 c = (box.lower + box.upper) * 0.5f, e = (box.upper - box.lower) * 0.5f;
+    return keepSorted(found, [&](uint32_t si) {
+        const Shape& s = w.shapes[si];
+        if (!(s.category & mask)) { return false; }
+        if (s.kind != ShapeKind::HalfSpace) { return boxesOverlap(s.lo, s.hi, box.lower, box.upper); }
+        const Transform xf = w.bodies[s.body].xf * s.local;
+        const Vec3 n = xf.q.rotate({ 0, 0, 1 });
+        return dot(c - xf.p, n) <= e.x * std::fabs(n.x) + e.y * std::fabs(n.y) + e.z * std::fabs(n.z);
+    });
+}
+
+bool World::overlapPoint(const Vec3& point, std::vector<ShapeId>& found, uint32_t mask) const {
+    const Impl& w = *impl_;
+    found.clear();
+    const float touch = kTouching * w.settings.lengthUnit;
+    const Vec3 lo = point - Vec3{ touch, touch, touch }, hi = point + Vec3{ touch, touch, touch };
+    for (uint32_t si : w.planes) { found.push_back(w.shapeId(si)); }
+    w.tree.query(lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    return keepSorted(found, [&](uint32_t si) {
+        const Shape& s = w.shapes[si];
+        if (!(s.category & mask)) { return false; }
+        if (s.kind != ShapeKind::HalfSpace && !boxesOverlap(s.lo, s.hi, lo, hi)) { return false; }
+        return shapeContains(s, w.bodies[s.body].xf * s.local, point, touch);
+    });
+}
+
 }

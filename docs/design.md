@@ -34,7 +34,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `src/mesh.cpp` | Mesh building, edge flags, the triangle tree, mesh rays |
 | `src/outline.cpp` | Marching squares, simplification, ear clipping, Hertel-Mehlhorn |
 | `src/shape.cpp`, `src/polyhedron.cpp` | Shape building, mass properties, bounds |
-| `src/query.cpp` | Ray casts |
+| `src/query.cpp` | Ray casts, overlap tests and shape casts against one shape |
 
 ## World and handles
 
@@ -163,7 +163,8 @@ distance, and a moving body's grow by how far it can travel in the step at its c
 velocity. Contacts between bodies that are both still are carried over untouched, which
 is what keeps a sleeping pile cheap.
 
-Ray casts, the sweeps of continuous collision and waking query the same tree.
+Ray casts, shape casts, overlap queries, the sweeps of continuous collision and waking
+query the same tree. See [Queries](#queries).
 
 See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
 
@@ -430,6 +431,42 @@ thin layer is wide in the plane, and that width is what keeps it from tunneling.
 
 See [decision 7](decisions/0007-continuous-collision-past-the-speculative-margin.md).
 
+## Queries
+
+Queries read the world and never change it. Each takes a category mask, culls with the
+bounds tree, tests half-spaces from their own list, and works against every shape kind. A
+planar body's shapes are ordinary 3D shapes to a query. Results come in shape index order
+unless noted.
+
+- **Rays.** `castRay` returns the closest hit and `castRayAll` one hit per shape, nearest
+  first and by shape index at equal fractions. Each shape kind has an exact ray test, and a
+  mesh walks its triangle tree.
+- **Points.** `overlapPoint` tests each shape analytically: the sphere's radius, the
+  cylinder's rim and caps, a polyhedron's face planes, the half-space's plane. A mesh has no
+  inside, so a point counts only on one of its triangles.
+- **Boxes.** `overlapAabb` compares bounds only. A half-space counts when the box reaches
+  past its plane.
+- **Convex geometry.** `overlapGeometry` takes a sphere, box, cylinder, prism or hull at a
+  pose and runs GJK against each candidate. Against a mesh, GJK runs on the triangles under
+  the query's bounds until one touches.
+- **Shape casts.** `castGeometry` moves the same geometry along a translation without
+  turning and returns the first shape it touches. Each candidate is swept by conservative
+  advancement on the same GJK distance, stepping by the larger of the gap along the GJK
+  normal over the closing speed and the distance over the speed. A step that lands inside
+  is bisected back. Against a mesh, the query's bounds slide down the triangle tree and
+  each triangle under the path is swept. The point and normal come from the narrowphase,
+  run just before the hit, with the point moved onto the hit shape. A cast that starts
+  touching a shape reports fraction 0 and `initialOverlap`, with the deepest contact point
+  and a normal pushing the geometry out, or a zero normal when there is none.
+
+Shapes within 0.01 mm, scaled by `lengthUnit`, touch. Overlaps and casts use the same GJK
+distance, query geometry first, so a cast's hit is found by an overlap query at the hit
+pose. GJK can stop above the true distance on a cylinder by an amount that depends on
+argument order, so near touch both orders are tried and the smaller kept. Casts don't use
+`timeOfImpact`, which stops early on cylinder caps.
+
+See [decision 25](decisions/0025-queries-share-one-touch-test.md).
+
 ## Sleeping and waking
 
 A body's sleep timer runs while its speed, counting rotation at its farthest point, stays
@@ -493,7 +530,10 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
 
 ## Known limits
 
-- No shape casts, overlap queries or contact callbacks yet.
+- No contact callbacks yet.
+- Shape casts don't turn, and take only convex geometry. A half-space or mesh as query
+  geometry finds nothing.
+- A cast that only grazes a shape, closing on it at almost no speed, can report a miss.
 - Meshes can't be dynamic. Use hulls or several convex shapes for a moving concave body.
 - A light chain holding a much heavier body stretches. Twelve links holding a ball about
   200 times heavier than each link rest 0.17 m longer in total.
