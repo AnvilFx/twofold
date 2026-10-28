@@ -132,7 +132,8 @@ every input point.
    whose relative motion over the step exceeds the speculative distance are also listed as
    fast.
 4. **Substeps.** `substeps` times (4 by default):
-   - halfway through, fast pairs are collided again (see below)
+   - halfway through, fast pairs are collided again, and fast pairs without a planar body
+     before every substep (see below)
    - integrate velocities
    - warm start joints, then contacts
    - solve joints with bias, then contacts, then again for impact contacts
@@ -206,6 +207,12 @@ See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
 Every pair produces candidate points with a separation. Speculative points, up to the
 margin apart, are kept so the solver can stop an approach before it turns into overlap.
 
+A point sits at the middle of the gap, so both bodies push on the same spot. A point
+farther apart than the speculative distance is anchored on each body's own surface
+instead. A fast body only reaches such a point late in the step, and a midpoint anchor
+would put its friction half the gap away from where it lands. Planar pairs keep the
+midpoint.
+
 ### Manifold reduction
 
 A manifold keeps at most four points. Each candidate gets a predicted separation: its
@@ -216,6 +223,10 @@ outside that triangle. Free slots take the deepest of the rest.
 
 Ranking on predicted separation rather than current separation matters for tumbling
 bodies. The vertex about to land is kept even though it is not touching yet.
+
+For a fast pair the spread is chosen among every point predicted to reach the surface
+within the step, not only those near the deepest. A thin plate landing at speed otherwise
+keeps the corners of the edge that hits first, pivots on that edge and flips up.
 
 ### Meshes
 
@@ -337,7 +348,8 @@ two inverse masses is treated as zero. See
 Contact points come from the start of the step. A body spinning fast carries those points
 away from where the overlap really is, and the solver pushes on points that no longer mean
 anything. Pairs listed as fast at the start of the step are collided again halfway through
-the substeps.
+the substeps. Fast pairs without a planar body are collided again before every substep
+after the first, with the margin covering only the motion left in the step.
 
 Before that, every active contact is rebased. Its anchors become the bodies' current lever
 arms, its stored separation absorbs the distance already moved, and `dp`, `dq` and the
@@ -346,7 +358,8 @@ same way as after the narrowphase, and the restitution data of the nearest old p
 mesh pair is collided once, and each of its contacts takes the new group whose normal is
 closest to its own.
 
-See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md).
+See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md) and
+[decision 24](decisions/0024-fast-solid-pairs-collide-every-substep.md).
 
 ## Joints
 
@@ -488,10 +501,8 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   deep for 8 to 12 frames before they recover. This also happens without the mid-step
   refresh. Pushing deep pairs out harder fixes it but keeps some hull piles from ever
   sleeping.
-- A thin body hitting the ground at 100 m/s or more can come back up with restitution 0,
-  at 1 to 30 m/s, and spin up. Reduction drops the speculative points about to land, and
-  contacts anchored at the midpoint give fast spinners the wrong lever arms. Fixing both
-  stops it up to 500 m/s but leaves resting cylinders slightly deeper.
+- A thin body hitting the ground at 2000 m/s can still come back up at 5 to 6 m/s with
+  restitution 0. Up to 500 m/s it stays under 0.6 m/s.
 - Cylinder pairs overlapping by less than 4 cm keep the feature axis estimate, which in
   rare poses is off by up to 30 mm.
 - A hull built thousands of units from the origin can have faces off by more than the

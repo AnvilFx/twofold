@@ -1163,3 +1163,33 @@ TEST(body_knocked_into_moving_paddle_ends_outside_it) {
     }
     CHECK(w.linearVelocity(ball).x < -100.0f);
 }
+
+TEST(fast_thin_plate_lands_without_rebound) {
+    for (float speed : { 100.0f, 200.0f, 500.0f }) {
+        for (float spin : { 0.0f, 1.0f }) {
+            World w;
+            addGround(w);
+            BodyDesc bd;
+            bd.position = { 0, 3, 0 };
+            bd.rotation = normalize(Quat{ 0.2f, 0.1f, 0.3f, 1 });
+            bd.linearVelocity = { 0.1f * speed, -speed, 0.05f * speed };
+            bd.angularVelocity = Vec3{ 50, 0, 80 } * spin;
+            const BodyId b = w.createBody(bd);
+            ShapeDesc sd;
+            sd.geometry = Box{ { 0.2f, 0.02f, 0.3f } };
+            w.addShape(b, sd);
+            bool landed = false;
+            float highest = 0.0f, fastestUp = 0.0f;
+            for (int i = 0; i < 90; ++i) {
+                w.step(1.0f / 30.0f);
+                landed = landed || w.position(b).y < 1.0f;
+                if (!landed) { continue; }
+                highest = std::fmax(highest, w.position(b).y);
+                fastestUp = std::fmax(fastestUp, w.linearVelocity(b).y);
+            }
+            CHECK(landed);
+            CHECK(highest < 0.35f);
+            CHECK(fastestUp < 1.5f);
+        }
+    }
+}

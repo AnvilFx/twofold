@@ -256,6 +256,8 @@ struct Motion {
     Vec3 angularB;
     Vec3 centerB;
     float dt = 0.0f;
+    // The pair travels further this step than the speculative distance.
+    bool fast = false;
 
     // Separation at p after the step, with n pointing from A to B.
     float predict(const Vec3& p, const Vec3& n, float separation) const {
@@ -264,7 +266,7 @@ struct Motion {
         return separation + dt * dot(n, vb - va);
     }
 
-    Motion swapped() const { return { linearB, angularB, centerB, linearA, angularA, centerA, dt }; }
+    Motion swapped() const { return { linearB, angularB, centerB, linearA, angularA, centerA, dt, fast }; }
 };
 
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
@@ -281,7 +283,8 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
                  const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out);
 
 // The first point kept is the first one within tie of the deepest.
-void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m, float tie = 0.0f);
+void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m, float tie = 0.0f,
+                    bool fast = false);
 
 struct ContactPoint {
     // Where the point touches each shape, in its body's frame.
