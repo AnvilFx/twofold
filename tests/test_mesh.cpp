@@ -315,6 +315,37 @@ TEST(contacts_on_sharp_mesh_ridges_stay_shallow) {
     CHECK(deepest < 0.03f);
 }
 
+TEST(tumbling_cylinders_in_a_fine_mesh_bowl_stay_shallow) {
+    World w;
+    addMesh(w, bowl(3.0f, 24, 64));
+    std::vector<BodyId> ids;
+    for (int i = 0; i < 9; ++i) {
+        BodyDesc bd;
+        bd.position = { -1.0f + (float)(i % 3), -1.0f + 0.4f * (float)i, -1.0f + (float)(i / 3) };
+        bd.rotation = normalize(Quat{ 0.3f * (float)(i % 4), 0.2f * (float)(i % 3), 0.4f * (float)(i % 2), 1.0f });
+        bd.linearVelocity = { 1.5f * std::sin((float)i), -4.0f, 1.5f * std::cos((float)i) };
+        bd.angularVelocity = { 8.0f * std::cos(2.0f * (float)i), 6.0f, 8.0f * std::sin(3.0f * (float)i) };
+        const BodyId b = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = Cylinder{ 0.2f + 0.05f * (float)(i % 3), 0.15f + 0.1f * (float)(i % 2) };
+        sd.friction = 0.6f;
+        w.addShape(b, sd);
+        ids.push_back(b);
+    }
+    float deepest = 0.0f;
+    for (int step = 0; step < 600; ++step) {
+        w.step(kDt);
+        for (const ContactInfo& ci : w.contacts()) {
+            for (int k = 0; k < ci.pointCount; ++k) { deepest = std::fmax(deepest, -ci.separations[k]); }
+        }
+    }
+    CHECK(deepest < 0.02f);
+    for (BodyId b : ids) {
+        CHECK(length(w.position(b)) < 2.95f);
+        CHECK(!w.isAwake(b));
+    }
+}
+
 TEST(bodies_touching_a_flat_mesh_get_its_normal) {
     World w;
     w.setGravity({});

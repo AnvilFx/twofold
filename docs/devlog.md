@@ -3,6 +3,32 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-29 00:50
+
+Meshes was the slowest bench scene and the furthest behind Jolt, about six times its time.
+It is down about a fifth, 1.74 to 1.35 ms a step pinned. Nothing else moves.
+
+- A fast mesh pair keeps the triangles it ruled out at the start of the step with their
+  distances, and the collisions within the step skip those still out of reach.
+- Against a cylinder, where the capsule around its axis is closest to the triangle between
+  the caps, the direction between the closest points is exact and GJK isn't needed.
+- Near a cap GJK still ran about 75 times a step, and changed the answer in almost all of
+  them. Projecting back and forth between triangle and cylinder now runs longer, and once
+  the direction between the pair separates the shapes to within 0.05 mm of the pair's
+  distance it stands in for GJK. That leaves about 24 calls, which start from that
+  direction. A 0.5 mm bound was faster but let the direction drift well off, since the gap
+  is flat near the best one, and overlaps grew (frames past 20 mm 1123 to 1812 over six
+  sets). Pairs closer than the slop always go to GJK.
+- A pruned polyhedron triangle skips the GJK check when its deepest vertex already reaches.
+- Smaller: cap points from a table, both signs of an axis in one pass, and the solver no
+  longer turns anchors on bodies that haven't turned or pushes anchored bodies.
+
+Only Meshes changes. Single seed sets swing a lot here: starting GJK elsewhere, which moves
+results only within its tolerance, changed one set's frames past 20 mm from 150 to 408. So
+this was measured over twelve sets of 32. Against 65373dd: frame mean 3.946 to 3.899,
+frames past 10 mm 26080 to 25334, past 20 mm 2821 to 3102, past 50 mm 59 both, mean
+contact overlap 0.1997 to 0.1972. The same within noise.
+
 ## 2026-10-28 20:26
 
 Continuous collision stopped short of flat faces, a few millimeters on a box or a cylinder

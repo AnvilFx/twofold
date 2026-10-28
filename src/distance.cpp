@@ -206,7 +206,7 @@ Convex convexOf(const Shape& s) {
     return c;
 }
 
-DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb) {
+DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb, const Vec3& start) {
     if (a.halfSpace || b.halfSpace) {
         if (a.halfSpace && b.halfSpace) { return { xa.p, xb.p, { 0, 0, 1 }, FLT_MAX }; }
         if (a.halfSpace) { return planeDistance(xa, b, xb); }
@@ -217,8 +217,13 @@ DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, c
     }
 
     Simplex s;
-    s.v[0].a = a.cylinder ? xa.apply({ a.rim, 0.0f, a.halfHeight }) : xa.apply(a.points[0]);
-    s.v[0].b = b.cylinder ? xb.apply({ b.rim, 0.0f, b.halfHeight }) : xb.apply(b.points[0]);
+    if (lengthSquared(start) > 0.0f) {
+        s.v[0].a = support(a, xa, start);
+        s.v[0].b = support(b, xb, -start);
+    } else {
+        s.v[0].a = a.cylinder ? xa.apply({ a.rim, 0.0f, a.halfHeight }) : xa.apply(a.points[0]);
+        s.v[0].b = b.cylinder ? xb.apply({ b.rim, 0.0f, b.halfHeight }) : xb.apply(b.points[0]);
+    }
     s.v[0].w = s.v[0].b - s.v[0].a;
     s.u[0] = 1.0;
     s.count = 1;

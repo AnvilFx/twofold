@@ -165,7 +165,9 @@ struct DistanceResult {
     float distance = 0.0f;
 };
 
-DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb);
+// A nonzero start is a guess at the normal, which only changes how fast the search converges.
+DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb,
+                        const Vec3& start = {});
 
 // Center of mass and rotation of a body moving from its pose at t = 0 to its pose at t = 1.
 struct Sweep {
@@ -298,10 +300,26 @@ void collide(const Shape& a, const Transform& xa, const Shape& b, const Transfor
 bool collidePlanar(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
                    const Vec3& n, float margin, const Tolerances& tol, Manifold& m);
 
+// A mesh triangle found no nearer to the other shape than distance.
+struct TriangleBound {
+    int triangle = 0;
+    float distance = 0.0f;
+};
+
+// Triangles ruled out by distance are added to found. Those in known, sorted by triangle, are skipped while
+// their distance less moved, how far the shapes have moved since, stays past the margin.
+struct TriangleBounds {
+    std::vector<TriangleBound>* found = nullptr;
+    const TriangleBound* known = nullptr;
+    int knownCount = 0;
+    float moved = 0.0f;
+};
+
 // Collides a sphere or polyhedron with a mesh. Each group of triangles facing the same way gives one
 // manifold, with its normal pointing from the mesh.
 void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, const Transform& xo, float margin,
-                 const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out);
+                 const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out,
+                 TriangleBounds* bounds = nullptr);
 
 // The first point kept is the first one within tie of the deepest.
 void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m, float tie = 0.0f,

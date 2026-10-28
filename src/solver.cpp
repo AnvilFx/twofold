@@ -40,6 +40,23 @@ void makeAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {
 
 bool anchored(const Body& b) { return b.type != MotionType::Dynamic || !b.awake; }
 
+// Pushes only the bodies that move, since an anchored body takes no impulse.
+void pushMoving(Body& a, Body& b, const Axis& x, float impulse, bool moveA, bool moveB) {
+    if (moveA) {
+        a.v -= x.linearA * impulse;
+        a.w -= x.angularA * impulse;
+    }
+    if (moveB) {
+        b.v += x.linearB * impulse;
+        b.w += x.angularB * impulse;
+    }
+}
+
+// Where the body has turned r since the substep's base pose.
+Vec3 turned(const Body& b, const Vec3& r) {
+    return b.dq.x == 0.0f && b.dq.y == 0.0f && b.dq.z == 0.0f ? r : b.dq.rotate(r);
+}
+
 // One step along the relative spin, so a body locked to a plane only takes impulse about the axes it can
 // turn on. The total is then held to the rolling limit.
 void resistTurning(Body& a, Body& b, Contact& c) {
@@ -159,12 +176,13 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
         const PointAxes* axes = &s.axes[4 * ci];
         Body& a = s.bodies[c.bodyA];
         Body& b = s.bodies[c.bodyB];
-        const Softness soft = (anchored(a) || anchored(b)) ? ctx.staticSoft : ctx.contactSoft;
+        const bool moveA = !anchored(a), moveB = !anchored(b);
+        const Softness soft = (!moveA || !moveB) ? ctx.staticSoft : ctx.contactSoft;
         const Vec3 dp = b.dp - a.dp;
 
         for (int i = 0; i < c.count; ++i) {
             ContactPoint& p = c.points[i];
-            const Vec3 d = dp + b.dq.rotate(p.anchorB) - a.dq.rotate(p.anchorA);
+            const Vec3 d = dp + turned(b, p.anchorB) - turned(a, p.anchorA);
             const float sep = dot(d, c.normal) + p.adjustedSeparation;
 
             float bias = 0.0f, massScale = 1.0f, impulseScale = 0.0f;
@@ -183,7 +201,7 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
             impulse = total - p.normalImpulse;
             p.normalImpulse = total;
             p.maxNormalImpulse = maxf(p.maxNormalImpulse, impulse);
-            push(a, b, x, impulse);
+            pushMoving(a, b, x, impulse, moveA, moveB);
         }
 
         // The relax pass takes friction points in reverse. One fixed order keeps stacks wobbling.
@@ -203,8 +221,8 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
                 t2 *= scale;
             }
             p.tangentImpulse = c.tangent1 * t1 + c.tangent2 * t2;
-            push(a, b, x1, t1 - old1);
-            push(a, b, x2, t2 - old2);
+            pushMoving(a, b, x1, t1 - old1, moveA, moveB);
+            pushMoving(a, b, x2, t2 - old2, moveA, moveB);
         }
 
         if (c.rollingResistance > 0.0f) { resistTurning(a, b, c); }
