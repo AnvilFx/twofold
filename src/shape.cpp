@@ -65,6 +65,8 @@ std::vector<Vec2> solidOutline(std::vector<Vec2> pts, float limit, float slab, c
     return { c + Vec2{ -slab, -slab }, c + Vec2{ slab, -slab }, c + Vec2{ slab, slab }, c + Vec2{ -slab, slab } };
 }
 
+float solidSize(float s) { return std::isfinite(s) ? std::fabs(s) : 0.0f; }
+
 // Negative half extents flip and non-finite ones become zero. A side with no length is thickened.
 Vec3 solidBox(Vec3 h) {
     for (int k = 0; k < 3; ++k) { h[k] = std::isfinite(h[k]) ? std::fabs(h[k]) : 0.0f; }
@@ -74,6 +76,22 @@ Vec3 solidBox(Vec3 h) {
         if (2.0f * h[k] <= limit) { h[k] = slabFor(size, limit); }
     }
     return h;
+}
+
+// Cleaned like a box, so a sphere with no radius gets the slab of a box with no size.
+float solidRadius(float r) {
+    r = solidSize(r);
+    const float limit = thinLimit(2.0f * r, r);
+    return 2.0f * r <= limit ? slabFor(2.0f * r, limit) : r;
+}
+
+void solidCylinder(Cylinder& c) {
+    c.radius = solidSize(c.radius);
+    c.halfHeight = solidSize(c.halfHeight);
+    const float size = 2.0f * std::sqrt(c.radius * c.radius + c.halfHeight * c.halfHeight);
+    const float limit = thinLimit(size, c.radius + c.halfHeight);
+    if (2.0f * c.radius <= limit) { c.radius = slabFor(size, limit); }
+    if (2.0f * c.halfHeight <= limit) { c.halfHeight = slabFor(size, limit); }
 }
 
 // Non-finite points are dropped. A polygon that is not a clean convex outline is replaced by its convex
@@ -133,16 +151,18 @@ void buildShape(Shape& s) {
     s.radius = 0.0f;
     s.halfHeight = 0.0f;
     s.centroid = Vec3{};
-    if (const Sphere* sp = std::get_if<Sphere>(&s.geometry)) {
+    if (Sphere* sp = std::get_if<Sphere>(&s.geometry)) {
         s.kind = ShapeKind::Sphere;
+        sp->radius = solidRadius(sp->radius);
         s.radius = sp->radius;
         s.extent = sp->radius;
     } else if (Box* bx = std::get_if<Box>(&s.geometry)) {
         s.kind = ShapeKind::Convex;
         bx->halfExtents = solidBox(bx->halfExtents);
         s.poly = makeBox(bx->halfExtents);
-    } else if (const Cylinder* cy = std::get_if<Cylinder>(&s.geometry)) {
+    } else if (Cylinder* cy = std::get_if<Cylinder>(&s.geometry)) {
         s.kind = ShapeKind::Cylinder;
+        solidCylinder(*cy);
         s.radius = cy->radius;
         s.halfHeight = cy->halfHeight;
         s.extent = std::sqrt(cy->radius * cy->radius + cy->halfHeight * cy->halfHeight);

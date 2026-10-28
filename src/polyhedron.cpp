@@ -24,11 +24,11 @@ Polyhedron makePolyhedron(std::vector<Vec3> vertices, const std::vector<std::vec
         Polyhedron::Face f;
         f.first = (int)p.indices.size();
         f.count = (int)loop.size();
-        // Newell's method.
+        // Newell's method, about the centroid so faces far from the origin keep their normals.
         Vec3 n;
         for (int i = 0; i < f.count; ++i) {
-            const Vec3& a = p.vertices[loop[i]];
-            const Vec3& b = p.vertices[loop[(i + 1) % f.count]];
+            const Vec3 a = p.vertices[loop[i]] - p.centroid;
+            const Vec3 b = p.vertices[loop[(i + 1) % f.count]] - p.centroid;
             n.x += (a.y - b.y) * (a.z + b.z);
             n.y += (a.z - b.z) * (a.x + b.x);
             n.z += (a.x - b.x) * (a.y + b.y);

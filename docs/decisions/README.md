@@ -30,3 +30,5 @@ replaces the old one instead of editing it.
 24. [Fast solid pairs collide every substep](0024-fast-solid-pairs-collide-every-substep.md)
 25. [Queries share one touch test](0025-queries-share-one-touch-test.md)
 26. [Events follow the solve, and sensors test overlap](0026-events-follow-the-solve-and-sensors-test-overlap.md)
+27. [Swing-twist rows follow the exact rates](0027-swing-twist-rows-follow-the-exact-rates.md)
+28. [Hulls are built about their own center](0028-hulls-are-built-about-their-own-center.md)

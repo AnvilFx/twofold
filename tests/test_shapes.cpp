@@ -136,3 +136,44 @@ TEST(hull_without_finite_points_is_a_tiny_solid) {
     CHECK(mass > 0.0f && mass < 1e-6f);
     CHECK(massOf(Hull{}) > 0.0f);
 }
+
+TEST(degenerate_spheres_and_cylinders_stay_finite) {
+    const std::vector<Geometry> shapes = {
+        Sphere{ 0.0f },
+        Sphere{ kNan },
+        Sphere{ -kInf },
+        Cylinder{ 0.0f, 0.0f },
+        Cylinder{ 0.0f, 0.3f },
+        Cylinder{ 0.3f, 0.0f },
+        Cylinder{ kNan, 0.3f },
+        Cylinder{ 0.3f, kInf },
+        Cylinder{ -0.3f, -0.2f },
+    };
+    for (const Geometry& g : shapes) {
+        const float mass = massOf(g);
+        CHECK(mass > 0.0f && mass < 1.0f);
+        const Drop d = drop(g, 120);
+        CHECK(d.unitNormals);
+        CHECK(d.finite);
+        CHECK(d.touching);
+        CHECK(d.deepest < 0.05f);
+    }
+    const Drop d = drop(Sphere{ -0.3f });
+    CHECK_NEAR(d.height, 0.3f, 0.01f);
+}
+
+TEST(sphere_and_cylinder_geometry_reads_back_cleaned) {
+    World w;
+    BodyDesc bd;
+    const BodyId b = w.createBody(bd);
+    ShapeDesc sd;
+    sd.geometry = Sphere{ kNan };
+    const ShapeId sphere = w.addShape(b, sd);
+    sd.geometry = Cylinder{ -0.5f, 0.0f };
+    const ShapeId cylinder = w.addShape(b, sd);
+    const float r = std::get<Sphere>(w.geometry(sphere)).radius;
+    CHECK(r > 0.0f && r < 1e-3f);
+    const Cylinder c = std::get<Cylinder>(w.geometry(cylinder));
+    CHECK(c.radius == 0.5f);
+    CHECK(c.halfHeight > 0.0f && c.halfHeight < 0.01f);
+}

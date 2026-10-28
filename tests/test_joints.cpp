@@ -428,3 +428,263 @@ TEST(copied_world_with_joints_steps_identically) {
         CHECK(x.p == y.p && x.q.x == y.q.x && x.q.y == y.q.y && x.q.z == y.q.z && x.q.w == y.q.w);
     }
 }
+
+TEST(hinge_friction_stops_a_pendulum) {
+    float worst = 0.0f;
+    for (int k = 0; k < 2; ++k) {
+        World w;
+        const BodyId bar = addBody(w, { 1, 5, 0 }, Box{ { 1.0f, 0.1f, 0.1f } });
+        HingeJoint hj{ { 0, 5, 0 }, { 0, 0, 1 } };
+        hj.frictionTorque = k == 0 ? 3.0f : 0.3f;
+        const JointId j = join(w, BodyId{}, bar, hj);
+        for (int i = 0; i < 600; ++i) {
+            w.step(kDt);
+            if (k == 0) { worst = std::fmax(worst, std::fabs(valueOf(w, j))); }
+        }
+        CHECK(std::fabs(w.angularVelocity(bar).z) < 0.01f);
+        const float weight = w.massProperties(bar).mass * 9.81f;
+        CHECK(weight * std::fabs(std::cos(valueOf(w, j))) < hj.frictionTorque + 0.01f);
+        if (k == 1) { CHECK(valueOf(w, j) < -1.0f); }
+    }
+    CHECK(worst < 0.01f);
+}
+
+TEST(slider_friction_works_with_a_motor) {
+    for (int k = 0; k < 2; ++k) {
+        World w;
+        const BodyId lift = addBody(w, { 0, 1, 0 }, Box{ { 0.5f, 0.1f, 0.5f } });
+        SliderJoint sj{ { 0, 1, 0 }, { 0, 1, 0 } };
+        sj.motorSpeed = 0.5f;
+        sj.maxMotorForce = 200.0f;
+        sj.frictionForce = k == 0 ? 50.0f : 250.0f;
+        const JointId j = join(w, BodyId{}, lift, sj);
+        for (int i = 0; i < 120; ++i) { w.step(kDt); }
+        if (k == 0) {
+            CHECK_NEAR(w.linearVelocity(lift).y, 0.5f, 0.01f);
+            CHECK_NEAR(valueOf(w, j), 1.0f, 0.03f);
+        } else {
+            CHECK(std::fabs(w.linearVelocity(lift).y) < 0.01f);
+            CHECK(std::fabs(valueOf(w, j)) < 0.01f);
+        }
+    }
+}
+
+TEST(swing_twist_cone_holds_a_loaded_arm) {
+    const float limits[2] = { 0.3f, 0.6f };
+    for (int k = 0; k < 2; ++k) {
+        World w;
+        BodyDesc bd;
+        bd.position = { 0.5f, 5, 0 };
+        const BodyId arm = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = Box{ { 0.5f, 0.05f, 0.05f } };
+        w.addShape(arm, sd);
+        sd.geometry = Sphere{ 0.15f };
+        sd.position = { 0.5f, 0, 0 };
+        sd.density = 50.0f;
+        w.addShape(arm, sd);
+        SwingTwistJoint st;
+        st.anchor = { 0, 5, 0 };
+        st.axis = { 1, 0, 0 };
+        st.normal = k == 0 ? Vec3{ 0, 1, 0 } : Vec3{ 0, 0, 1 };
+        st.swingY = limits[0];
+        st.swingZ = limits[1];
+        join(w, BodyId{}, arm, st);
+        float deepest = 0.0f;
+        for (int i = 0; i < 240; ++i) {
+            w.step(kDt);
+            const Vec3 x = w.rotation(arm).rotate({ 1, 0, 0 });
+            deepest = std::fmax(deepest, std::acos(std::fmin(x.x, 1.0f)));
+        }
+        const Vec3 x = w.rotation(arm).rotate({ 1, 0, 0 });
+        CHECK(x.y < 0.0f);
+        CHECK_NEAR(std::acos(x.x), limits[k], 0.01f);
+        CHECK(deepest < limits[k] + 0.03f);
+        CHECK(length(w.angularVelocity(arm)) < 0.01f);
+    }
+}
+
+TEST(swing_twist_twist_limits_hold_under_torque) {
+    World w;
+    const BodyId leg = addBody(w, { 0, 4.5f, 0 }, Box{ { 0.2f, 0.5f, 0.1f } });
+    SwingTwistJoint st;
+    st.anchor = { 0, 5, 0 };
+    st.axis = { 0, -1, 0 };
+    st.normal = { 1, 0, 0 };
+    st.swingY = 0.4f;
+    st.swingZ = 0.4f;
+    st.lowerTwist = -0.4f;
+    st.upperTwist = 0.7f;
+    const JointId j = join(w, BodyId{}, leg, st);
+    float highest = 0.0f, lowest = 0.0f;
+    for (int i = 0; i < 240; ++i) {
+        w.addTorque(leg, { 0, i < 120 ? -0.5f : 0.5f, 0 });
+        w.step(kDt);
+        highest = std::fmax(highest, valueOf(w, j));
+        lowest = std::fmin(lowest, valueOf(w, j));
+        if (i == 119) { CHECK_NEAR(valueOf(w, j), 0.7f, 0.01f); }
+    }
+    CHECK_NEAR(valueOf(w, j), -0.4f, 0.01f);
+    CHECK(highest < 0.72f && lowest > -0.42f);
+    CHECK(std::fabs(w.rotation(leg).rotate({ 0, 1, 0 }).y) > 0.999f);
+}
+
+TEST(ragdoll_falls_and_settles) {
+    struct Part {
+        Vec3 center, half;
+        int parent;
+        Vec3 anchor, axis;
+        bool hinge;
+    };
+    const Part parts[] = {
+        { { 0, 1.3f, 0 }, { 0.2f, 0.3f, 0.12f }, -1, {}, {}, false },
+        { { 0, 1.75f, 0 }, { 0.1f, 0.12f, 0.1f }, 0, { 0, 1.6f, 0 }, { 0, 1, 0 }, false },
+        { { -0.35f, 1.5f, 0 }, { 0.15f, 0.05f, 0.05f }, 0, { -0.2f, 1.5f, 0 }, { -1, 0, 0 }, false },
+        { { -0.65f, 1.5f, 0 }, { 0.15f, 0.04f, 0.04f }, 2, { -0.5f, 1.5f, 0 }, { 0, 0, 1 }, true },
+        { { 0.35f, 1.5f, 0 }, { 0.15f, 0.05f, 0.05f }, 0, { 0.2f, 1.5f, 0 }, { 1, 0, 0 }, false },
+        { { 0.65f, 1.5f, 0 }, { 0.15f, 0.04f, 0.04f }, 4, { 0.5f, 1.5f, 0 }, { 0, 0, 1 }, true },
+        { { -0.1f, 0.8f, 0 }, { 0.07f, 0.2f, 0.07f }, 0, { -0.1f, 1.0f, 0 }, { 0, -1, 0 }, false },
+        { { -0.1f, 0.4f, 0 }, { 0.06f, 0.2f, 0.06f }, 6, { -0.1f, 0.6f, 0 }, { 1, 0, 0 }, true },
+        { { 0.1f, 0.8f, 0 }, { 0.07f, 0.2f, 0.07f }, 0, { 0.1f, 1.0f, 0 }, { 0, -1, 0 }, false },
+        { { 0.1f, 0.4f, 0 }, { 0.06f, 0.2f, 0.06f }, 8, { 0.1f, 0.6f, 0 }, { 1, 0, 0 }, true },
+    };
+    for (int drop = 0; drop < 4; ++drop) {
+        World w;
+        addGround(w);
+        const Vec3 lift{ 0, 1.0f + 0.5f * (float)drop, 0 };
+        std::vector<BodyId> bodies;
+        std::vector<Vec3> axes;
+        std::vector<JointId> cones;
+        for (const Part& p : parts) {
+            const BodyId b = addBody(w, p.center + lift, Box{ p.half });
+            bodies.push_back(b);
+            w.setAngularVelocity(b, Vec3{ 1.0f, 0.3f * (float)drop, 2.0f - (float)drop });
+            if (p.parent < 0) { continue; }
+            if (p.hinge) {
+                HingeJoint hj{ p.anchor + lift, p.axis };
+                hj.limited = true;
+                hj.lowerAngle = -2.0f;
+                hj.upperAngle = 0.0f;
+                hj.frictionTorque = 0.05f;
+                join(w, bodies[p.parent], b, hj);
+            } else {
+                SwingTwistJoint st;
+                st.anchor = p.anchor + lift;
+                st.axis = p.axis;
+                st.normal = { 0, 0, 1 };
+                st.swingY = 0.8f;
+                st.swingZ = 0.5f;
+                st.lowerTwist = -0.5f;
+                st.upperTwist = 0.5f;
+                st.frictionTorque = 0.05f;
+                cones.push_back(join(w, bodies[p.parent], b, st));
+                axes.push_back(p.axis);
+            }
+        }
+        float fastest = 0.0f, worstGap = 0.0f;
+        for (int i = 0; i < 600; ++i) {
+            w.step(kDt);
+            for (BodyId b : bodies) { fastest = std::fmax(fastest, length(w.linearVelocity(b))); }
+            for (const JointInfo& info : w.joints()) { worstGap = std::fmax(worstGap, length(info.anchorB - info.anchorA)); }
+        }
+        CHECK(fastest < 10.0f);
+        CHECK(worstGap < 0.02f);
+        for (BodyId b : bodies) {
+            CHECK(!w.isAwake(b));
+            CHECK(w.position(b).y > 0.0f && w.position(b).y < 0.5f);
+        }
+        for (size_t k = 0; k < cones.size(); ++k) {
+            const JointInfo info = w.jointInfo(cones[k]);
+            const Vec3 tilted = w.rotation(info.bodyB).rotate(axes[k]);
+            CHECK(std::acos(std::fmin(dot(tilted, info.axis), 1.0f)) < 0.85f);
+            CHECK(std::fabs(info.value) < 0.55f);
+        }
+    }
+}
+
+TEST(planar_swing_twist_chain_moves_like_a_limited_hinge_chain) {
+    std::vector<Vec3> paths[2];
+    float worstZ = 0.0f;
+    for (int k = 0; k < 2; ++k) {
+        World w;
+        addGround(w);
+        BodyId prev;
+        for (int i = 0; i < 8; ++i) {
+            const float x = 0.5f * (float)i + 0.25f;
+            const BodyId link = addBody(w, { x, 4, 0 }, Box{ { 0.25f, 0.05f, 0.05f } }, MotionType::Dynamic, LockPlanar);
+            if (k == 0) {
+                HingeJoint hj{ { x - 0.25f, 4, 0 }, { 0, 0, 1 } };
+                hj.limited = true;
+                hj.lowerAngle = -0.4f;
+                hj.upperAngle = 0.4f;
+                join(w, prev, link, hj);
+            } else {
+                SwingTwistJoint st;
+                st.anchor = { x - 0.25f, 4, 0 };
+                st.axis = { 1, 0, 0 };
+                st.swingY = 0.4f;
+                st.swingZ = 0.4f;
+                join(w, prev, link, st);
+            }
+            prev = link;
+        }
+        for (int i = 0; i < 300; ++i) {
+            w.step(kDt);
+            paths[k].push_back(w.position(prev));
+            worstZ = std::fmax(worstZ, std::fabs(w.position(prev).z));
+        }
+    }
+    float worst = 0.0f;
+    for (size_t i = 0; i < paths[0].size(); ++i) { worst = std::fmax(worst, length(paths[1][i] - paths[0][i])); }
+    CHECK(worst < 1e-3f);
+    CHECK(worstZ < 1e-4f);
+}
+
+TEST(hanging_body_pulls_on_its_joint_with_its_weight) {
+    World w;
+    const BodyId bob = addBody(w, { 0, 4, 0 }, Sphere{ 0.2f });
+    const JointId held = join(w, BodyId{}, bob, PointJoint{ { 0, 5, 0 } });
+    const BodyId beam = addBody(w, { 1, 5, 3 }, Box{ { 1.0f, 0.1f, 0.1f } });
+    const JointId fixed = join(w, BodyId{}, beam, FixedJoint{ { 0, 5, 3 } });
+    for (int i = 0; i < 120; ++i) { w.step(kDt); }
+    const float bobWeight = w.massProperties(bob).mass * 9.81f;
+    const JointInfo a = w.jointInfo(held);
+    CHECK(length(a.force - Vec3{ 0, bobWeight, 0 }) < 0.01f * bobWeight);
+    CHECK(length(a.torque) < 1e-3f * bobWeight);
+    const float beamWeight = w.massProperties(beam).mass * 9.81f;
+    const JointInfo b = w.jointInfo(fixed);
+    CHECK(length(b.force - Vec3{ 0, beamWeight, 0 }) < 0.01f * beamWeight);
+    CHECK(length(b.torque - Vec3{ 0, 0, beamWeight }) < 0.02f * beamWeight);
+}
+
+TEST(joint_breaks_past_its_limits_and_lets_go) {
+    for (int k = 0; k < 3; ++k) {
+        World w;
+        const BodyId beam = addBody(w, { 1, 5, 0 }, Box{ { 1.0f, 0.1f, 0.1f } });
+        const float weight = w.massProperties(beam).mass * 9.81f;
+        JointDesc jd;
+        jd.bodyB = beam;
+        jd.kind = FixedJoint{ { 0, 5, 0 } };
+        if (k == 0) { jd.breakForce = 2.0f * weight; }
+        if (k == 1) { jd.breakForce = 0.5f * weight; }
+        if (k == 2) { jd.breakTorque = 0.5f * weight; }
+        const JointId j = w.createJoint(jd);
+        int brokeAt = -1;
+        for (int i = 0; i < 60; ++i) {
+            w.step(kDt);
+            const std::vector<JointId> broken = w.brokenJoints();
+            if (!broken.empty()) {
+                CHECK(broken.size() == 1 && broken[0] == j && brokeAt < 0);
+                brokeAt = i;
+            }
+        }
+        CHECK(w.isValid(j));
+        CHECK(w.jointInfo(j).broken == (k > 0));
+        if (k == 0) {
+            CHECK(w.position(beam).y > 4.99f);
+        } else {
+            CHECK(brokeAt >= 0 && brokeAt < 3);
+            CHECK(w.position(beam).y < 1.0f);
+        }
+    }
+}

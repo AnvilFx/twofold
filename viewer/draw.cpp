@@ -307,7 +307,7 @@ void drawContacts(const Scene& s, const DrawOptions& o, BodyId selected) {
 void drawJoints(const Scene& s, const DrawOptions& o, BodyId selected) {
     const World& w = s.world;
     const Color kinds[] = { { 255, 220, 90, 255 }, { 255, 120, 90, 255 }, { 90, 220, 255, 255 }, { 150, 255, 120, 255 },
-                            { 230, 140, 255, 255 } };
+                            { 230, 140, 255, 255 }, { 255, 160, 200, 255 } };
     const Color arm{ 200, 200, 210, 255 };
     rlDrawRenderBatchActive();
     rlDisableDepthTest();
@@ -324,6 +324,7 @@ void drawJoints(const Scene& s, const DrawOptions& o, BodyId selected) {
             drawLine(j.anchorA, j.anchorB, RED);
         }
         if (j.type == JointType::Hinge) { drawLine(j.anchorA - j.axis * 0.4f, j.anchorA + j.axis * 0.4f, c); }
+        if (j.type == JointType::SwingTwist) { drawLine(j.anchorA, j.anchorA + j.axis * 0.4f, c); }
         if (j.type == JointType::Slider) { drawLine(j.anchorA - j.axis * 0.8f, j.anchorA + j.axis * 0.8f, c); }
     }
     rlDrawRenderBatchActive();

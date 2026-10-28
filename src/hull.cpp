@@ -23,10 +23,11 @@ struct Face {
 
 uint64_t edgeKey(int a, int b) { return ((uint64_t)(uint32_t)a << 32) | (uint32_t)b; }
 
+// Builds from points moved near the origin, and gives back the original points.
 class Builder {
 public:
-    Builder(const std::vector<Vec3>& points, float tolerance, float size)
-        : p_(points), tol_(tolerance), fold_(tolerance / size), reclaimed_(points.size(), false) {}
+    Builder(const std::vector<Vec3>& points, const std::vector<Vec3>& original, float tolerance, float size)
+        : p_(points), original_(original), tol_(tolerance), fold_(tolerance / size), reclaimed_(points.size(), false) {}
 
     void addFace(int a, int b, int c) {
         Face f;
@@ -124,7 +125,7 @@ public:
             for (int& v : loop) {
                 if (remap[v] < 0) {
                     remap[v] = (int)out.vertices.size();
-                    out.vertices.push_back(p_[v]);
+                    out.vertices.push_back(original_[v]);
                 }
                 v = remap[v];
             }
@@ -303,6 +304,7 @@ private:
     }
 
     const std::vector<Vec3>& p_;
+    const std::vector<Vec3>& original_;
     float tol_;
     // Sine of the steepest fold back that leaves no corner more than the tolerance outside.
     float fold_;
@@ -384,7 +386,12 @@ HullMesh hullOf(const std::vector<Vec3>& points, int maxVertices, bool thickenFl
         return hullOf(thicken(points, &n, 1, slab), maxVertices, false);
     }
 
-    Builder builder(points, tol, size);
+    // Around the center the tolerance needs no allowance for distance from the origin.
+    const Vec3 center = (lo + hi) * 0.5f;
+    std::vector<Vec3> local;
+    local.reserve(points.size());
+    for (const Vec3& p : points) { local.push_back(p - center); }
+    Builder builder(local, points, std::max(1e-4f * size, 1e-8f), size);
     builder.build(s, maxVertices);
     return builder.mesh();
 }

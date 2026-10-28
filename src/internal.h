@@ -410,12 +410,27 @@ struct Joint {
     float lower = 0.0f, upper = 0.0f;
     float motorSpeed = 0.0f, maxMotor = 0.0f;
     float hertz = 0.0f, dampingRatio = 0.0f;
+    float maxFriction = 0.0f;
+    // A swing-twist joint's frame in each body, x along the axis and y along the normal, and the sines of half
+    // its swing limits.
+    Quat frameA, frameB;
+    float swingY = 1.0f, swingZ = 1.0f;
+    float breakForce = 0.0f, breakTorque = 0.0f;
+    bool broken = false;
 
     Vec3 linearImpulse;
     Vec3 angularImpulse;
     float axialImpulse = 0.0f;
     float motorImpulse = 0.0f;
     float lowerImpulse = 0.0f, upperImpulse = 0.0f;
+    float frictionImpulse = 0.0f;
+    float swingImpulse = 0.0f;
+    Vec3 frictionTurn;
+    // Force and torque about anchor B per unit impulse of the axial or twist row and of the swing row, as last
+    // solved.
+    Vec3 rowForce[2], rowTorque[2];
+    // On body B, summed over the substeps of the last step the joint was active, and then divided by its length.
+    Vec3 force, torque;
 };
 
 struct Softness {
@@ -460,10 +475,13 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
 void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx);
 
 void warmStartJoints(SolverData& s, const std::vector<uint32_t>& active);
+// The relax pass adds each joint's impulses on body B to its force and torque.
 void solveJoints(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias);
 // Moves joined bodies back together without changing their velocities.
 void settleJoints(SolverData& s, const std::vector<uint32_t>& active, int iterations);
-// The hinge angle, slider translation or distance.
+// The hinge angle, slider translation, distance or twist.
 float jointValue(const Joint& j, const Body& a, const Body& b);
+// Adds the impulse and the angular impulse about anchor B the joint gave body B in the substep just solved.
+void addReaction(Joint& j);
 
 }

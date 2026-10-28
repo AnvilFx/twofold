@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <variant>
 #include <vector>
@@ -141,8 +142,8 @@ struct FixedJoint {
 };
 
 // Turns about the axis through the anchor. The angle is in radians, counterclockwise about the axis and zero
-// in the joined pose. The motor drives the turn toward motorSpeed with up to maxMotorTorque, so a speed of
-// zero acts as friction.
+// in the joined pose. The motor drives the turn toward motorSpeed with up to maxMotorTorque. Friction resists
+// any turn with up to frictionTorque, alongside the motor.
 struct HingeJoint {
     Vec3 anchor;
     Vec3 axis{ 0, 0, 1 };
@@ -151,6 +152,7 @@ struct HingeJoint {
     float upperAngle = 0.0f;
     float motorSpeed = 0.0f;
     float maxMotorTorque = 0.0f;
+    float frictionTorque = 0.0f;
 };
 
 // Slides along the axis through the anchor without turning. The translation is how far body B has moved
@@ -163,6 +165,7 @@ struct SliderJoint {
     float upperTranslation = 0.0f;
     float motorSpeed = 0.0f;
     float maxMotorForce = 0.0f;
+    float frictionForce = 0.0f;
 };
 
 // Holds the anchors at length apart, or as a spring when hertz is above zero. A negative length takes the
@@ -178,9 +181,25 @@ struct DistanceJoint {
     float maxDistance = 0.0f;
 };
 
-using JointKind = std::variant<PointJoint, FixedJoint, HingeJoint, SliderJoint, DistanceJoint>;
+// Holds the anchors together and limits how far body B turns from its joined pose, as for a shoulder or hip.
+// In the joint frame x is the axis, y the normal and z their cross product. Swing tilts the axis: toward y by
+// up to swingY and toward z by up to swingZ, within the ellipse between. Twist is the turn about the axis,
+// counterclockwise and zero in the joined pose. Friction resists any turn with up to frictionTorque. Angles
+// are in radians. Swing is free when both limits are pi or more, and twist when its range is 2 pi or more.
+struct SwingTwistJoint {
+    Vec3 anchor;
+    Vec3 axis{ 1, 0, 0 };
+    Vec3 normal{ 0, 1, 0 };
+    float swingY = 3.14159265f;
+    float swingZ = 3.14159265f;
+    float lowerTwist = -3.14159265f;
+    float upperTwist = 3.14159265f;
+    float frictionTorque = 0.0f;
+};
 
-enum class JointType : uint8_t { Point, Fixed, Hinge, Slider, Distance };
+using JointKind = std::variant<PointJoint, FixedJoint, HingeJoint, SliderJoint, DistanceJoint, SwingTwistJoint>;
+
+enum class JointType : uint8_t { Point, Fixed, Hinge, Slider, Distance, SwingTwist };
 
 struct JointDesc {
     // Left unset, body B is joined to the world.
@@ -188,6 +207,9 @@ struct JointDesc {
     BodyId bodyB;
     JointKind kind = PointJoint{};
     bool collideConnected = false;
+    // The joint breaks when the force or torque it applies in a step goes over these.
+    float breakForce = std::numeric_limits<float>::infinity();
+    float breakTorque = std::numeric_limits<float>::infinity();
     void* userData = nullptr;
 };
 
@@ -279,8 +301,14 @@ struct JointInfo {
     Vec3 anchorA;
     Vec3 anchorB;
     Vec3 axis;
-    // The hinge angle, slider translation or distance. Zero for point and fixed joints.
+    // The hinge angle, slider translation, distance or twist. Zero for point and fixed joints.
     float value = 0.0f;
+    // Force and torque the joint applied to body B in the last step it was active, the torque about anchor B.
+    // Body A took the opposite.
+    Vec3 force;
+    Vec3 torque;
+    // A broken joint no longer acts, but keeps its handle and its collision filter until it is destroyed.
+    bool broken = false;
 };
 
 struct Aabb {
@@ -396,11 +424,19 @@ public:
     JointId createJoint(const JointDesc& desc);
     void destroyJoint(JointId joint);
     bool isValid(JointId joint) const;
-    // Angles for a hinge, translations for a slider, distances for a distance joint.
+    // Angles for a hinge, translations for a slider, distances for a distance joint, twist angles for a
+    // swing-twist joint.
     void setJointLimits(JointId joint, bool limited, float lower, float upper);
     void setJointMotor(JointId joint, float speed, float maxForce);
     void setJointSpring(JointId joint, float hertz, float dampingRatio);
+    // Torque for a hinge or swing-twist joint, force for a slider.
+    void setJointFriction(JointId joint, float maxFriction);
+    void setJointSwing(JointId joint, float swingY, float swingZ);
+    void setJointBreakLimits(JointId joint, float force, float torque);
     std::vector<JointInfo> joints() const;
+    JointInfo jointInfo(JointId joint) const;
+    // Joints that broke in the last step, in index order.
+    std::vector<JointId> brokenJoints() const;
 
     MassProperties massProperties(BodyId body) const;
     // Replaces the mass computed from the shapes until resetMassProperties is called.

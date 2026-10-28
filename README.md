@@ -33,7 +33,8 @@ is tested by AnvilFx before it ships.
 - Continuous collision for bodies knocked or pushed through thin shapes within a single
   step, against static, kinematic and dynamic bodies
 - Sleeping islands, and bodies created asleep until touched
-- Point, fixed, hinge, slider and distance joints, with limits, motors and springs
+- Point, fixed, hinge, slider, distance and swing-twist joints, with limits, motors,
+  springs and friction, a force and torque readout, and breaking
 - Collision filtering by category and mask
 - Ray casts against every shape type, for the closest hit or every hit
 - Shape casts and overlap queries for points, boxes and convex geometry, against every
@@ -179,8 +180,34 @@ door.kind = hinge;
 JointId id = world.createJoint(door);
 ```
 
-Joined bodies don't collide with each other unless `collideConnected` is set. Destroying
-a body destroys its joints.
+A swing-twist joint suits a shoulder or hip. Its swing stays inside an elliptical cone and
+its twist about the axis inside a range.
+
+```cpp
+JointDesc shoulder;
+shoulder.bodyA = torso;
+shoulder.bodyB = upperArm;
+SwingTwistJoint st;
+st.anchor = { 0.2f, 1.5f, 0 };
+st.axis = { 1, 0, 0 };
+st.normal = { 0, 0, 1 };
+st.swingY = 0.8f;
+st.swingZ = 0.5f;
+st.lowerTwist = -0.5f;
+st.upperTwist = 0.5f;
+st.frictionTorque = 0.05f;
+shoulder.kind = st;
+shoulder.breakForce = 500.0f;
+JointId arm = world.createJoint(shoulder);
+```
+
+Hinges and sliders take `frictionTorque` and `frictionForce`, alongside their motors and
+limits. `jointInfo` gives the force and torque a joint applied in the last step. A joint
+breaks when either goes over `breakForce` or `breakTorque`. A broken joint stops acting,
+shows up in `brokenJoints` for that step, and keeps its handle until destroyed.
+
+Joined bodies don't collide with each other unless `collideConnected` is set, even after
+the joint breaks. Destroying a body destroys its joints.
 
 ## Queries
 
