@@ -3,6 +3,20 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 03:01
+
+A thin plate hitting the ground at 100 m/s or more bounced back up with restitution 0, at
+up to 34 m/s. Reduction kept the corners of the edge that hit first, so the plate pivoted
+on it, and friction on speculative points meters apart acted half the gap away from where
+the plate landed.
+
+Fixing both stopped the bounce but made Cutouts, Flat layers, Meshes and Rain worse.
+Planar pairs were most of that, so they keep midpoint anchors now. Fast pairs without a
+planar body are also collided again before every substep instead of only halfway. That
+costs up to 46% more in Meshes, but overlap went down in Rain, Hulls, Meshes, Sweeper and
+Joints. The plate stays under 0.6 m/s up to 500 m/s. See
+[decision 24](decisions/0024-fast-solid-pairs-collide-every-substep.md).
+
 ## 2026-10-28 02:09
 
 A dynamic body resting on the ground and then made static kept its contact with the ground

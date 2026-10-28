@@ -346,8 +346,9 @@ struct World::Impl {
         const Body& bb = bodies[sb.body];
         const Transform xa = ba.xf * sa.local;
         const Transform xb = bb.xf * sb.local;
-        const float margin = tol.speculative + relativeTravel(ba, bb, dt);
-        const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt };
+        const float travel = relativeTravel(ba, bb, dt);
+        const float margin = tol.speculative + travel;
+        const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt, travel > tol.speculative };
         if (sa.kind == ShapeKind::Mesh) {
             collideMesh(sa, xa, sb, xb, margin, tol, mo, out);
             return;
@@ -364,6 +365,13 @@ struct World::Impl {
             collide(sa, xa, sb, xb, margin, tol, mo, m);
         }
         if (m.count > 0) { out.push_back(m); }
+    }
+
+    // Points further apart than the speculative distance anchor on each body's own surface, so friction on a
+    // fast body acts where it lands. Planar pairs keep the midpoint.
+    Vec3 lift(const Body& a, const Body& b, const Vec3& normal, float separation) const {
+        if (a.planar() || b.planar()) { return Vec3{}; }
+        return separation > tol.speculative ? normal * (0.5f * separation) : Vec3{};
     }
 
     // The old contact of a pair whose normal is closest to n.
@@ -679,8 +687,9 @@ struct World::Impl {
                     p.surfaceB = bb.xf.applyInverse(m.points[i].position + half);
                     p.localA = ba.xf.applyInverse(m.points[i].position);
                     p.separation = m.points[i].separation;
-                    p.anchorA = m.points[i].position - ba.com;
-                    p.anchorB = m.points[i].position - bb.com;
+                    const Vec3 up = lift(ba, bb, m.normal, p.separation);
+                    p.anchorA = m.points[i].position - up - ba.com;
+                    p.anchorB = m.points[i].position + up - bb.com;
                 }
                 remember(ba, bb, c);
                 const Contact* olds = contacts.data();
@@ -742,8 +751,9 @@ struct World::Impl {
             const Vec3 pa = a.xf.apply(p.surfaceA), pb = b.xf.apply(p.surfaceB);
             const Vec3 mid = (pa + pb) * 0.5f;
             p.separation = dot(pb - pa, c.normal);
-            p.anchorA = mid - a.com;
-            p.anchorB = mid - b.com;
+            const Vec3 up = lift(a, b, c.normal, p.separation);
+            p.anchorA = mid - up - a.com;
+            p.anchorB = mid + up - b.com;
             p.tangentImpulse = p.tangentImpulse - c.normal * dot(c.normal, p.tangentImpulse);
         }
     }
@@ -772,7 +782,7 @@ struct World::Impl {
         return out;
     }
 
-    // A spinning body carries its contact points away from the overlap, so fast pairs are collided again mid-step.
+    // A spinning body carries its contact points away from the overlap, so fast pairs are collided again within the step.
     void refreshContacts(const std::vector<uint32_t>& active, const std::vector<uint32_t>& fast, float remaining) {
         for (uint32_t ci : active) {
             Contact& c = contacts[ci];
@@ -820,8 +830,9 @@ struct World::Impl {
                 p = ContactPoint{};
                 p.localA = a.xf.applyInverse(m.points[i].position);
                 p.separation = m.points[i].separation;
-                p.anchorA = m.points[i].position - a.com;
-                p.anchorB = m.points[i].position - b.com;
+                const Vec3 up = lift(a, b, m.normal, p.separation);
+                p.anchorA = m.points[i].position - up - a.com;
+                p.anchorB = m.points[i].position + up - b.com;
             }
             prepareContact(a, b, c, &axes[4 * ci]);
             // Restitution needs the speed the pair approached at, from the nearest point the step started with.
@@ -1131,14 +1142,18 @@ struct World::Impl {
             updateInverseMass(b);
         }
 
-        std::vector<uint32_t> active, fast;
+        // Fast pairs are collided again mid-step, and those without a planar body before every substep.
+        std::vector<uint32_t> active, fast, fastSolid;
         for (uint32_t i = 0; i < contacts.size(); ++i) {
             const Contact& c = contacts[i];
             const Body& a = bodies[c.bodyA];
             const Body& b = bodies[c.bodyB];
             if ((a.type == MotionType::Dynamic && a.awake) || (b.type == MotionType::Dynamic && b.awake)) {
                 active.push_back(i);
-                if (relativeTravel(a, b, dt) > tol.speculative) { fast.push_back(i); }
+                if (relativeTravel(a, b, dt) > tol.speculative) {
+                    fast.push_back(i);
+                    if (!a.planar() && !b.planar()) { fastSolid.push_back(i); }
+                }
             }
         }
 
@@ -1169,7 +1184,8 @@ struct World::Impl {
         prepareContacts(data, active);
         const std::vector<uint32_t> impact = impactContacts(active, ctx.restitutionThreshold);
         for (int i = 0; i < n; ++i) {
-            if (i > 0 && i == n / 2 && !fast.empty()) { refreshContacts(active, fast, (float)(n - i) * h); }
+            const std::vector<uint32_t>& again = i == n / 2 ? fast : fastSolid;
+            if (i > 0 && !again.empty()) { refreshContacts(active, again, (float)(n - i) * h); }
             integrateVelocities(h);
             warmStartJoints(data, activeJoints);
             warmStart(data, active);

@@ -243,7 +243,7 @@ void faceContact(const FramePoly& ref, int refFace, const FramePoly& inc, bool f
             buf.points.push_back({ w - worldN * (0.5f * s), s, motion.predict(w, worldN, s) });
         }
     }
-    reduceManifold(buf.points, flip ? -worldN : worldN, band, m);
+    reduceManifold(buf.points, flip ? -worldN : worldN, band, m, 0.0f, motion.fast);
 }
 
 void closestOnSegments(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec3& q2, Vec3& c1, Vec3& c2) {
@@ -307,7 +307,7 @@ void edgeContact(const FramePoly& a, const FramePoly& b, const EdgeQuery& eq, co
         }
     }
     if (buf.points.size() >= 2) {
-        reduceManifold(buf.points, worldN, band, m);
+        reduceManifold(buf.points, worldN, band, m, 0.0f, motion.fast);
         return;
     }
 
@@ -784,7 +784,7 @@ void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, cons
             for (int k = 0; k < 2; ++k) { linePair(buf.fa[0], buf.fa[1], buf.turn[2 * k], buf.turn[2 * k + 1]); }
         }
     }
-    reduceManifold(pts, worldN, band, m, 0.5f * band);
+    reduceManifold(pts, worldN, band, m, 0.5f * band, motion.fast);
 }
 
 // Collides two shapes in the world frame, at least one of them a cylinder.
@@ -855,7 +855,7 @@ void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& 
             if (s > margin) { continue; }
             pts.push_back({ w - n * (0.5f * s), s, motion.predict(w, n, s) });
         }
-        reduceManifold(pts, n, band, m, 0.5f * band);
+        reduceManifold(pts, n, band, m, 0.5f * band, motion.fast);
         return;
     }
     const Vec3 localN = xo.q.unrotate(n);
@@ -866,7 +866,7 @@ void collideHalfSpace(const Transform& xh, const Shape& other, const Transform& 
         const Vec3 w = xo.apply(v);
         pts.push_back({ w - n * (0.5f * s), s, motion.predict(w, n, s) });
     }
-    reduceManifold(pts, n, band, m);
+    reduceManifold(pts, n, band, m, 0.0f, motion.fast);
 }
 
 // Triangle manifolds whose normals are this close merge into one.
@@ -1033,9 +1033,10 @@ struct MeshBuffers {
 
 }
 
-// Ranks points by predicted separation. Spread is chosen among points within band of the deepest,
-// then free slots take the deepest of the rest.
-void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float band, Manifold& m, float tie) {
+// Ranks points by predicted separation. Spread is chosen among points within band of the deepest, or for a
+// fast pair among all predicted to reach the surface, then free slots take the deepest of the rest.
+void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float band, Manifold& m, float tie,
+                    bool fast) {
     m.normal = normal;
     m.count = 0;
     if (pts.size() <= 4) {
@@ -1054,7 +1055,7 @@ void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float b
         }
     }
     const Vec3 p0 = pts[i0].position;
-    const float limit = pts[i0].predicted + band;
+    const float limit = fast ? std::fmax(pts[i0].predicted + band, 0.0f) : pts[i0].predicted + band;
     size_t chosen[4] = { i0, i0, i0, i0 };
     auto used = [&](size_t i) { return i == chosen[0] || i == chosen[1] || i == chosen[2] || i == chosen[3]; };
     m.points[m.count++] = pts[i0];
