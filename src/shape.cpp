@@ -116,7 +116,7 @@ void solidPrism(Prism& pr) {
 Vec3 cylinderReach(const Vec3& axis, float radius, float halfHeight) {
     Vec3 r;
     for (int i = 0; i < 3; ++i) {
-        r[i] = halfHeight * std::fabs(axis[i]) + radius * std::sqrt(std::fmax(1.0f - axis[i] * axis[i], 0.0f));
+        r[i] = halfHeight * std::fabs(axis[i]) + radius * std::sqrt(maxf(1.0f - axis[i] * axis[i], 0.0f));
     }
     return r;
 }

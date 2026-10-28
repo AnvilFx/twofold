@@ -8,6 +8,24 @@
 
 namespace twofold {
 
+// std::fmax and std::fmin, NaN and signed zeros included, but inline. MSVC makes them library calls.
+inline float maxf(float a, float b) {
+    if (a > b) { return a; }
+    if (b > a) { return b; }
+    if (a != a) { return b; }
+    if (b != b) { return a; }
+    // Equal. Only zeros can differ, and the sum of two zeros is negative only when both are.
+    return a == 0.0f ? a + b : a;
+}
+
+inline float minf(float a, float b) {
+    if (a < b) { return a; }
+    if (b < a) { return b; }
+    if (a != a) { return b; }
+    if (b != b) { return a; }
+    return a == 0.0f ? -(-a + -b) : a;
+}
+
 struct TriangleMesh::Data {
     // A leaf holds count triangles from first. An inner node has a count of zero and its children at first
     // and first + 1.
@@ -184,6 +202,8 @@ struct Body {
     Transform xf;
     Vec3 com;
     Vec3 localCenter;
+    // How far the shapes reach from the center of mass.
+    float extent = 0.0f;
     Vec3 v;
     Vec3 w;
     Vec3 force;

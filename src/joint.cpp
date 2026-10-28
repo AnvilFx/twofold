@@ -57,7 +57,7 @@ Mat3 pseudoInverse(const Mat3& m) {
             }
         }
     }
-    const float top = std::fmax(a[0][0], std::fmax(a[1][1], a[2][2]));
+    const float top = maxf(a[0][0], maxf(a[1][1], a[2][2]));
     Mat3 out = Mat3::zero();
     for (int i = 0; i < 3; ++i) {
         if (a[i][i] <= 1e-6f * top) { continue; }
@@ -181,7 +181,7 @@ void solveLimit(Body& a, Body& b, const Axis& x, const Vec3& d, float error, flo
         impulseScale = ctx.jointSoft.impulseScale;
     }
     float impulse = -x.mass * massScale * (speedAlong(a, b, d, x) + bias) - impulseScale * total;
-    const float next = std::fmax(total + impulse, 0.0f);
+    const float next = maxf(total + impulse, 0.0f);
     impulse = next - total;
     total = next;
     push(a, b, x, impulse);
@@ -189,7 +189,7 @@ void solveLimit(Body& a, Body& b, const Axis& x, const Vec3& d, float error, flo
 
 void solveMotor(Body& a, Body& b, const Axis& x, const Vec3& d, float speed, float maxImpulse, float& total) {
     const float old = total;
-    total = std::fmin(std::fmax(old - x.mass * (speedAlong(a, b, d, x) - speed), -maxImpulse), maxImpulse);
+    total = minf(maxf(old - x.mass * (speedAlong(a, b, d, x) - speed), -maxImpulse), maxImpulse);
     push(a, b, x, total - old);
 }
 

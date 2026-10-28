@@ -281,7 +281,7 @@ Impact timeOfImpact(const Convex& a, const Transform& localA, const Sweep& sweep
         // GJK can stop above the true distance. The gap along its normal never is.
         float gap = r.distance;
         if (!a.halfSpace && !b.halfSpace) {
-            gap = std::fmin(gap, dot(r.normal, support(b, xb, -r.normal) - support(a, xa, r.normal)) - a.radius - b.radius);
+            gap = minf(gap, dot(r.normal, support(b, xb, -r.normal) - support(a, xa, r.normal)) - a.radius - b.radius);
         }
         // No point of either shape closes the gap along the normal faster than this.
         const float closing = dot(approach, r.normal) + spin;

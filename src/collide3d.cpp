@@ -111,7 +111,7 @@ FaceQuery queryFaces(const FramePoly& a, const FramePoly& b, float limit) {
         float s = dot(n, b.v[deep]);
         if (s > bound) {
             for (int k = 0; k < b.vertexCount; ++k) {
-                s = std::fmin(s, dot(n, b.v[k]));
+                s = minf(s, dot(n, b.v[k]));
                 if (s <= bound) { break; }
             }
         }
@@ -130,9 +130,9 @@ void edgesInBox(const FramePoly& p, const Vec3& lo, const Vec3& hi, std::vector<
     const std::vector<Polyhedron::Edge>& edges = p.src->edges;
     for (size_t i = 0; i < edges.size(); ++i) {
         const Vec3 s = p.v[edges[i].v0], t = p.v[edges[i].v1];
-        if (std::fmin(s.x, t.x) > hi.x || std::fmax(s.x, t.x) < lo.x) { continue; }
-        if (std::fmin(s.y, t.y) > hi.y || std::fmax(s.y, t.y) < lo.y) { continue; }
-        if (std::fmin(s.z, t.z) > hi.z || std::fmax(s.z, t.z) < lo.z) { continue; }
+        if ((s.x > hi.x && t.x > hi.x) || (s.x < lo.x && t.x < lo.x)) { continue; }
+        if ((s.y > hi.y && t.y > hi.y) || (s.y < lo.y && t.y < lo.y)) { continue; }
+        if ((s.z > hi.z && t.z > hi.z) || (s.z < lo.z && t.z < lo.z)) { continue; }
         out.push_back((int)i);
     }
 }
@@ -256,22 +256,22 @@ void closestOnSegments(const Vec3& p1, const Vec3& q1, const Vec3& p2, const Vec
         return;
     }
     if (a <= FLT_EPSILON) {
-        t = std::fmin(std::fmax(f / e, 0.0f), 1.0f);
+        t = minf(maxf(f / e, 0.0f), 1.0f);
     } else {
         const float c = dot(d1, r);
         if (e <= FLT_EPSILON) {
-            s = std::fmin(std::fmax(-c / a, 0.0f), 1.0f);
+            s = minf(maxf(-c / a, 0.0f), 1.0f);
         } else {
             const float b = dot(d1, d2);
             const float denom = a * e - b * b;
-            s = denom != 0.0f ? std::fmin(std::fmax((b * f - c * e) / denom, 0.0f), 1.0f) : 0.0f;
+            s = denom != 0.0f ? minf(maxf((b * f - c * e) / denom, 0.0f), 1.0f) : 0.0f;
             t = (b * s + f) / e;
             if (t < 0.0f) {
                 t = 0.0f;
-                s = std::fmin(std::fmax(-c / a, 0.0f), 1.0f);
+                s = minf(maxf(-c / a, 0.0f), 1.0f);
             } else if (t > 1.0f) {
                 t = 1.0f;
-                s = std::fmin(std::fmax((b - c) / a, 0.0f), 1.0f);
+                s = minf(maxf((b - c) / a, 0.0f), 1.0f);
             }
         }
     }
@@ -300,7 +300,7 @@ void edgeContact(const FramePoly& a, const FramePoly& b, const EdgeQuery& eq, co
         }
         // No point needs a deeper push than the separating axis allows.
         for (const Vec3& p : buf.poly) {
-            const float s = std::fmax((dot(a.n[fa], p) - a.d[fa]) / cosA, eq.separation);
+            const float s = maxf((dot(a.n[fa], p) - a.d[fa]) / cosA, eq.separation);
             if (s > margin) { continue; }
             const Vec3 w = xf.apply(p);
             buf.points.push_back({ w - worldN * (0.5f * s), s, motion.predict(w, worldN, s) });
@@ -337,14 +337,14 @@ void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const 
     const FaceQuery fb = queryFaces(b, a, margin);
     if (fb.separation > margin) { return; }
     // An edge axis only wins with less overlap than the best face axis.
-    const float reach = std::fmax(margin, -std::fmax(fa.separation, fb.separation));
+    const float reach = maxf(margin, -maxf(fa.separation, fb.separation));
     const EdgeQuery eq = queryEdges(a, b, reach, buf.nearA, buf.nearB);
     if (eq.separation > margin) { return; }
     // Pruned edges can hold the only axis separating shapes that are further apart than margin.
     if (eq.pruned && distance(convexOf(sa), xa, convexOf(sb), xb).distance > margin) { return; }
 
     const float absTol = 0.5f * tol.linearSlop;
-    if (eq.a >= 0 && eq.separation > 0.9f * std::fmax(fa.separation, fb.separation) + absTol) {
+    if (eq.a >= 0 && eq.separation > 0.9f * maxf(fa.separation, fb.separation) + absTol) {
         edgeContact(a, b, eq, xa, margin, tol.linearSlop, motion, buf.clip, m);
     } else if (fb.separation > 0.98f * fa.separation + absTol) {
         faceContact(b, fb.index, a, true, xa, margin, tol.linearSlop, motion.swapped(), buf.clip, m);
@@ -391,7 +391,7 @@ void collideSpherePoly(const Shape& poly, const Transform& xp, const Vec3& cente
             if (dot(cross(b - a, fn), proj - a) > 0.0f) {
                 inside = false;
                 const Vec3 ab = b - a;
-                const float t = std::fmin(std::fmax(dot(c - a, ab) / std::fmax(dot(ab, ab), FLT_MIN), 0.0f), 1.0f);
+                const float t = minf(maxf(dot(c - a, ab) / maxf(dot(ab, ab), FLT_MIN), 0.0f), 1.0f);
                 const Vec3 q = a + ab * t;
                 const float dsq = lengthSquared(c - q);
                 if (dsq < closestSq) { closestSq = dsq; closest = q; }
@@ -456,10 +456,10 @@ Solid solidOf(const Shape& s, const Transform& xf, FrameStore& store) {
 float extentAlong(const Solid& s, const Vec3& d) {
     if (s.cylinder) {
         const float a = dot(s.axis, d);
-        return dot(s.center, d) + s.halfHeight * std::fabs(a) + s.radius * std::sqrt(std::fmax(1.0f - a * a, 0.0f));
+        return dot(s.center, d) + s.halfHeight * std::fabs(a) + s.radius * std::sqrt(maxf(1.0f - a * a, 0.0f));
     }
     float most = dot(s.poly.v[0], d);
-    for (int k = 1; k < s.poly.vertexCount; ++k) { most = std::fmax(most, dot(s.poly.v[k], d)); }
+    for (int k = 1; k < s.poly.vertexCount; ++k) { most = maxf(most, dot(s.poly.v[k], d)); }
     return most;
 }
 
@@ -588,7 +588,7 @@ int distanceAxes(Convex ca, const Transform& xa, Convex cb, const Transform& xb,
     float shrunk = 0.0f;
     for (Convex* c : { &ca, &cb }) {
         if (!c->cylinder) { continue; }
-        const float core = 0.25f * std::fmin(c->rim, c->halfHeight);
+        const float core = 0.25f * minf(c->rim, c->halfHeight);
         c->rim -= core;
         c->halfHeight -= core;
         c->radius += core;
@@ -627,6 +627,73 @@ Separation climb(const Solid& a, const Solid& b, Separation start) {
     return best;
 }
 
+Vec3 closestOnCylinder(const Solid& s, const Vec3& p) {
+    const Vec3 d = p - s.center;
+    const float along = dot(d, s.axis);
+    Vec3 radial = d - s.axis * along;
+    const float len = length(radial);
+    if (len > s.radius) { radial = radial * (s.radius / len); }
+    return s.center + s.axis * minf(maxf(along, -s.halfHeight), s.halfHeight) + radial;
+}
+
+// The point of the triangle closest to p, and its feature: corner k is k, edge k is 3 + k, the face is 6.
+Vec3 closestOnTriangle(const Vec3 c[3], const Vec3& p, int& feature) {
+    const Vec3 ab = c[1] - c[0], ac = c[2] - c[0], ap = p - c[0];
+    const float d1 = dot(ab, ap), d2 = dot(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f) {
+        feature = 0;
+        return c[0];
+    }
+    const Vec3 bp = p - c[1];
+    const float d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3) {
+        feature = 1;
+        return c[1];
+    }
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        feature = 3;
+        return c[0] + ab * (d1 / (d1 - d3));
+    }
+    const Vec3 cp = p - c[2];
+    const float d5 = dot(ab, cp), d6 = dot(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6) {
+        feature = 2;
+        return c[2];
+    }
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        feature = 5;
+        return c[0] + ac * (d2 / (d2 - d6));
+    }
+    const float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && d4 - d3 >= 0.0f && d5 - d6 >= 0.0f) {
+        feature = 4;
+        return c[1] + (c[2] - c[1]) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    feature = 6;
+    const float denom = 1.0f / (va + vb + vc);
+    return c[0] + ab * (vb * denom) + ac * (vc * denom);
+}
+
+// Distance from the segment pq to the triangle.
+float segmentToTriangle(const Vec3 c[3], const Vec3& p, const Vec3& q) {
+    const Vec3 n = cross(c[1] - c[0], c[2] - c[0]);
+    const float hp = dot(n, p - c[0]), hq = dot(n, q - c[0]);
+    int feature;
+    if ((hp < 0.0f) != (hq < 0.0f)) {
+        closestOnTriangle(c, p + (q - p) * (hp / (hp - hq)), feature);
+        if (feature == 6) { return 0.0f; }
+    }
+    float best = minf(length(p - closestOnTriangle(c, p, feature)), length(q - closestOnTriangle(c, q, feature)));
+    for (int k = 0; k < 3; ++k) {
+        Vec3 s, t;
+        closestOnSegments(p, q, c[k], c[(k + 1) % 3], s, t);
+        best = minf(best, length(s - t));
+    }
+    return best;
+}
+
 // False when the solids are further apart than margin. A GJK direction only wins where no flat or straight
 // feature pair comes close, such as a rim on an edge. In a deep overlap the GJK directions are approximate or
 // missing, so the best axis climbs toward the direction a curved pair touches along.
@@ -634,11 +701,32 @@ bool separate(const Solid& a, const Solid& b, const Convex& ca, const Transform&
               const Transform& xb, const Quat& toFrame, float margin, const Tolerances& tol, Separation& best) {
     best = featureAxes(a, b);
     if (best.gap > margin) { return false; }
-    Vec3 n[2];
-    const int count = distanceAxes(ca, xa, cb, xb, tol, n);
-    Separation curved;
-    for (int i = 0; i < count; ++i) { tryAxis(a, b, toFrame.unrotate(n[i]), curved); }
-    if (curved.gap > best.gap + 0.1f * tol.linearSlop) { best = curved; }
+    float apart = FLT_MAX;
+    if (!a.cylinder && a.poly.vertexCount == 3) {
+        // A cylinder lies within the capsule around its axis. GJK would only confirm a triangle out of its reach.
+        if (b.cylinder) {
+            const Vec3 h = b.axis * b.halfHeight;
+            const float reach = segmentToTriangle(a.poly.v, b.center - h, b.center + h) - b.radius;
+            if (reach > margin + 0.1f * tol.linearSlop) { return false; }
+        }
+        // No axis separates the solids by more than two of their points are apart. Once a pair found by
+        // projecting back and forth comes as close as the best axis, a GJK direction can't win.
+        Vec3 p = supportPoint(b, -best.normal);
+        for (int i = 0; i < 3; ++i) {
+            int feature;
+            const Vec3 q = closestOnTriangle(a.poly.v, p, feature);
+            apart = length(p - q);
+            if (!b.cylinder || apart <= best.gap + 0.1f * tol.linearSlop) { break; }
+            p = closestOnCylinder(b, q);
+        }
+    }
+    if (apart > best.gap + 0.1f * tol.linearSlop) {
+        Vec3 n[2];
+        const int count = distanceAxes(ca, xa, cb, xb, tol, n);
+        Separation curved;
+        for (int i = 0; i < count; ++i) { tryAxis(a, b, toFrame.unrotate(n[i]), curved); }
+        if (curved.gap > best.gap + 0.1f * tol.linearSlop) { best = curved; }
+    }
     if (best.gap < -2.0f * tol.speculative) {
         // The gap has several peaks. A rim pressed into the other solid peaks near its cap normal or its side.
         Separation climbed = climb(a, b, best);
@@ -703,7 +791,7 @@ void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, cons
     pts.clear();
     // No point needs a deeper push than the separating direction allows.
     auto add = [&](const Vec3& onA, const Vec3& onB, float s) {
-        s = std::fmax(s, gap);
+        s = maxf(s, gap);
         if (s > margin) { return; }
         const Vec3 w = xf.apply((onA + onB) * 0.5f);
         pts.push_back({ w, s, motion.predict(w, worldN, s) });
@@ -744,11 +832,11 @@ void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, cons
         const float la = dot(da, da), lb = dot(db, db);
         if (la > 0.0f && lb > 0.0f && length(cross(da, db)) <= kParallelEdges * std::sqrt(la * lb)) {
             const float t0 = dot(b0 - a0, da) / la, t1 = dot(b1 - a0, da) / la;
-            const float lo = std::fmax(std::fmin(t0, t1), 0.0f), hi = std::fmin(std::fmax(t0, t1), 1.0f);
+            const float lo = maxf(minf(t0, t1), 0.0f), hi = minf(maxf(t0, t1), 1.0f);
             if (lo <= hi) {
                 for (float t : { lo, hi }) {
                     const Vec3 onA = a0 + da * t;
-                    const Vec3 onB = b0 + db * std::fmin(std::fmax(dot(onA - b0, db) / lb, 0.0f), 1.0f);
+                    const Vec3 onB = b0 + db * minf(maxf(dot(onA - b0, db) / lb, 0.0f), 1.0f);
                     add(onA, onB, dot(onB - onA, n));
                 }
                 return;
@@ -757,7 +845,7 @@ void solidContact(const Solid& a, const Solid& b, const Vec3& n, float gap, cons
         // Lines tilted against n reach deeper at their ends than where they pass closest.
         Vec3 onA, onB;
         closestOnSegments(a0, a1, b0, b1, onA, onB);
-        add(onA, onB, std::fmin(dot(b0, n), dot(b1, n)) - std::fmax(dot(a0, n), dot(a1, n)));
+        add(onA, onB, minf(dot(b0, n), dot(b1, n)) - maxf(dot(a0, n), dot(a1, n)));
     };
 
     const Solid& incident = refA ? b : a;
@@ -818,7 +906,7 @@ void collideSphereCylinder(const Shape& cyl, const Transform& xc, const Vec3& ce
         }
     } else {
         const float scale = rho > cyl.radius ? cyl.radius / rho : 1.0f;
-        surface = { c.x * scale, c.y * scale, std::fmin(std::fmax(c.z, -cyl.halfHeight), cyl.halfHeight) };
+        surface = { c.x * scale, c.y * scale, minf(maxf(c.z, -cyl.halfHeight), cyl.halfHeight) };
         const float dist = length(c - surface);
         if (dist <= 0.0f) { return; }
         n = (c - surface) / dist;
@@ -947,46 +1035,6 @@ EdgeQuery queryTriangleEdges(const FramePoly& a, const FramePoly& b, float reach
     return q;
 }
 
-// The point of the triangle closest to p, and its feature: corner k is k, edge k is 3 + k, the face is 6.
-Vec3 closestOnTriangle(const Vec3 c[3], const Vec3& p, int& feature) {
-    const Vec3 ab = c[1] - c[0], ac = c[2] - c[0], ap = p - c[0];
-    const float d1 = dot(ab, ap), d2 = dot(ac, ap);
-    if (d1 <= 0.0f && d2 <= 0.0f) {
-        feature = 0;
-        return c[0];
-    }
-    const Vec3 bp = p - c[1];
-    const float d3 = dot(ab, bp), d4 = dot(ac, bp);
-    if (d3 >= 0.0f && d4 <= d3) {
-        feature = 1;
-        return c[1];
-    }
-    const float vc = d1 * d4 - d3 * d2;
-    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
-        feature = 3;
-        return c[0] + ab * (d1 / (d1 - d3));
-    }
-    const Vec3 cp = p - c[2];
-    const float d5 = dot(ab, cp), d6 = dot(ac, cp);
-    if (d6 >= 0.0f && d5 <= d6) {
-        feature = 2;
-        return c[2];
-    }
-    const float vb = d5 * d2 - d1 * d6;
-    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
-        feature = 5;
-        return c[0] + ac * (d2 / (d2 - d6));
-    }
-    const float va = d3 * d6 - d5 * d4;
-    if (va <= 0.0f && d4 - d3 >= 0.0f && d5 - d6 >= 0.0f) {
-        feature = 4;
-        return c[1] + (c[2] - c[1]) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    feature = 6;
-    const float denom = 1.0f / (va + vb + vc);
-    return c[0] + ab * (vb * denom) + ac * (vc * denom);
-}
-
 // The edge or corner of the triangle farthest along d, numbered as above. Only the face has the face's
 // normal, so any other d meets an edge or corner: the edge when its far corner is within tolerance.
 int triangleFeature(const Vec3 c[3], const Vec3& d, float tolerance) {
@@ -1055,7 +1103,7 @@ void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float b
         }
     }
     const Vec3 p0 = pts[i0].position;
-    const float limit = fast ? std::fmax(pts[i0].predicted + band, 0.0f) : pts[i0].predicted + band;
+    const float limit = fast ? maxf(pts[i0].predicted + band, 0.0f) : pts[i0].predicted + band;
     size_t chosen[4] = { i0, i0, i0, i0 };
     auto used = [&](size_t i) { return i == chosen[0] || i == chosen[1] || i == chosen[2] || i == chosen[3]; };
     m.points[m.count++] = pts[i0];
@@ -1213,7 +1261,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             if (fa.separation > margin) { return; }
             const FaceQuery fb = queryFaces(b, a, margin);
             if (fb.separation > margin) { return; }
-            const float reach = std::fmax(margin, -std::fmax(fa.separation, fb.separation));
+            const float reach = maxf(margin, -maxf(fa.separation, fb.separation));
             const EdgeQuery eq = queryTriangleEdges(a, b, reach, buf.near);
             if (eq.separation > margin) { return; }
             if (eq.pruned) {
@@ -1222,7 +1270,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             }
 
             Manifold m;
-            if (eq.a >= 0 && eq.separation > 0.9f * std::fmax(fa.separation, fb.separation) + absTol) {
+            if (eq.a >= 0 && eq.separation > 0.9f * maxf(fa.separation, fb.separation) + absTol) {
                 edgeContact(a, b, eq, xm, margin, tol.linearSlop, motion, buf.clip, m);
             } else if (fb.separation > 0.98f * fa.separation + absTol) {
                 faceContact(b, fb.index, a, true, xm, margin, tol.linearSlop, motion.swapped(), buf.clip, m);
@@ -1237,7 +1285,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             const Vec3 normal = xm.q.unrotate(m.normal);
             if (std::fabs(dot(normal, n)) < 0.9999f) {
                 if (!keepsNormal(d->edges[t], triangleFeature(c, normal, tol.linearSlop), fa.index, normal, n)) {
-                    const float floor = std::fmax(std::fmax(fa.separation, fb.separation), eq.separation) - tol.linearSlop;
+                    const float floor = maxf(maxf(fa.separation, fb.separation), eq.separation) - tol.linearSlop;
                     m.count = 0;
                     faceContact(a, fa.index, b, false, xm, margin, tol.linearSlop, motion, buf.clip, m);
                     for (int k = 0; k < m.count; ++k) {
@@ -1280,8 +1328,8 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
         // A curved patch is deepest at one end, so spread is chosen among all penetrating points.
         Manifold m;
         float deep = FLT_MAX;
-        for (const ManifoldPoint& p : pts) { deep = std::fmin(deep, p.predicted); }
-        reduceManifold(pts, buf.found[lead].normal, std::fmax(tol.linearSlop, -deep), m);
+        for (const ManifoldPoint& p : pts) { deep = minf(deep, p.predicted); }
+        reduceManifold(pts, buf.found[lead].normal, maxf(tol.linearSlop, -deep), m);
         out.push_back(m);
         ++groupCount;
     }

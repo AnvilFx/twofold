@@ -110,8 +110,8 @@ bool rayBox(const Vec3& lo, const Vec3& hi, const Vec3& o, const Vec3& d, float 
         const float inv = 1.0f / d[i];
         float t0 = (lo[i] - o[i]) * inv, t1 = (hi[i] - o[i]) * inv;
         if (t0 > t1) { std::swap(t0, t1); }
-        lower = std::fmax(lower, t0);
-        upper = std::fmin(upper, t1);
+        lower = maxf(lower, t0);
+        upper = minf(upper, t1);
         if (lower > upper) { return false; }
     }
     return true;
