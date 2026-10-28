@@ -454,6 +454,7 @@ struct App {
         changed |= ImGui::SliderFloat("Damping ratio", &s.contactDampingRatio, 0.0f, 20.0f, "%.1f");
         changed |= ImGui::SliderFloat("Max pushout", &s.maxPushoutSpeed, 0.1f, 20.0f, "%.1f");
         changed |= ImGui::SliderFloat("Bounce threshold", &s.restitutionThreshold, 0.0f, 5.0f, "%.2f");
+        changed |= ImGui::SliderFloat("Hit threshold", &s.hitThreshold, 0.0f, 5.0f, "%.2f");
         changed |= ImGui::SliderFloat("Sleep threshold", &s.sleepThreshold, 0.0f, 0.5f, "%.3f");
         changed |= ImGui::SliderFloat("Time to sleep", &s.timeToSleep, 0.0f, 3.0f, "%.2f s");
         changed |= ImGui::Checkbox("Continuous collision", &s.continuous);

@@ -36,7 +36,7 @@ endif()
 
 if(TWOFOLD_BUILD_TESTS)
     enable_testing()
-    add_executable(twofold_tests tests/main.cpp tests/test_hull.cpp tests/test_continuous.cpp tests/test_joints.cpp tests/test_mesh.cpp tests/test_cylinder.cpp tests/test_outline.cpp tests/test_planar.cpp tests/test_query.cpp tests/test_shapes.cpp tests/test_world.cpp)
+    add_executable(twofold_tests tests/main.cpp tests/test_hull.cpp tests/test_continuous.cpp tests/test_events.cpp tests/test_joints.cpp tests/test_mesh.cpp tests/test_cylinder.cpp tests/test_outline.cpp tests/test_planar.cpp tests/test_query.cpp tests/test_shapes.cpp tests/test_world.cpp)
     target_link_libraries(twofold_tests PRIVATE twofold)
     add_test(NAME twofold_tests COMMAND twofold_tests)
 endif()

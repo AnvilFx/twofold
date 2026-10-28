@@ -38,10 +38,12 @@ is tested by AnvilFx before it ships.
 - Ray casts against every shape type, for the closest hit or every hit
 - Shape casts and overlap queries for points, boxes and convex geometry, against every
   shape type
+- Begin, end and hit events for touching shapes, and sensor shapes that report what
+  overlaps them without colliding
 - Deterministic single-threaded stepping, and world copies that step identically
 - Per-step timings and counts, contact details and sleep islands for debugging tools
 
-Not yet implemented: dynamic meshes and contact callbacks.
+Not yet implemented: dynamic meshes.
 
 ## Building
 
@@ -182,8 +184,8 @@ a body destroys its joints.
 
 ## Queries
 
-Queries never change the world. Each takes a category mask, and results come in a fixed
-order, so the same world gives the same answer.
+Queries never change the world. Each takes a category mask, skips sensors, and results come
+in a fixed order, so the same world gives the same answer.
 
 ```cpp
 std::vector<ShapeId> found;
@@ -198,6 +200,29 @@ if (world.castGeometry(Box{ { 0.5f, 0.5f, 0.5f } }, { { 0, 5, 0 } }, { 0, -10, 0
 A cast that starts inside a shape reports it at fraction 0 with `initialOverlap` set.
 Queries take spheres, boxes, cylinders, prisms and hulls. A mesh has no inside, so only
 its triangles count.
+
+## Events
+
+After each step, `contactEvents` lists the shape pairs that began or stopped touching,
+`hitEvents` the pairs that struck faster than `WorldSettings::hitThreshold`, and
+`sensorEvents` the shapes that entered or left a sensor.
+
+```cpp
+ShapeDesc zone;
+zone.geometry = Box{ { 2, 1, 2 } };
+zone.sensor = true;
+ShapeId trigger = world.addShape(ground, zone);
+
+world.step(1.0f / 60.0f);
+for (const SensorEvent& e : world.sensorEvents()) {
+    if (e.sensor == trigger && e.begin) {
+        // e.visitor entered the zone
+    }
+}
+```
+
+A sensor has no mass and never collides or wakes anything. It sees static, kinematic and
+sleeping bodies, but not other sensors or the shapes on its own body.
 
 ## Units
 

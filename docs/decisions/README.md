@@ -29,3 +29,4 @@ replaces the old one instead of editing it.
 23. [Half-spaces are half-planes on the planar path](0023-half-spaces-are-half-planes-on-the-planar-path.md)
 24. [Fast solid pairs collide every substep](0024-fast-solid-pairs-collide-every-substep.md)
 25. [Queries share one touch test](0025-queries-share-one-touch-test.md)
+26. [Events follow the solve, and sensors test overlap](0026-events-follow-the-solve-and-sensors-test-overlap.md)

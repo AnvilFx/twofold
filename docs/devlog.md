@@ -3,6 +3,35 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 18:43
+
+Contact and sensor events. Before this the only way to know two shapes met was to read
+`contacts()` every step and diff it, which has a contact per facing for mesh pairs and
+holds speculative contacts that never touch.
+
+A pair touches when the solver pushed on one of its points in some substep, or a point
+overlaps. Having points at all would begin a touch for bodies that only pass close, and
+overlap alone flickers on a resting box, whose contacts hover around zero. It holds until
+nothing pushes and every point is a slop apart. Each contact keeps the flag and all
+contacts of a pair agree, so a mesh pair begins and ends once. Hits are the fastest pushed
+point of a pair over `hitThreshold`, one per pair a step.
+
+Destroying a body or shape ends its touches right away, with the old ids, and they come
+first in the next step's list. A slot reused before that step can't inherit a touch.
+Filter and motion type changes only mark contacts removed, so the step decides. A pair that
+still touches under its new filter reports nothing. Sleeping pairs keep their impulses and
+stay quiet.
+
+Sensors are a shape flag and stay out of the contact list. Sensor contacts would need
+skipping in waking, islands, the mid-step refresh and continuous collision. A pass after
+continuous collision queries the tree with each sensor's bounds and runs GJK on what it
+finds, and pairs where neither body moved keep their result. Sensors have no mass, wake
+nothing, and rays and queries go through them. They see static, kinematic and sleeping
+bodies, follow the collision filter, and ignore other sensors and their own body.
+
+With no sensors the hashes are the same as before and the bench scenes time the same
+within noise. See [decision 26](decisions/0026-events-follow-the-solve-and-sensors-test-overlap.md).
+
 ## 2026-10-28 18:39
 
 Added overlap queries for points, boxes and convex geometry, shape casts, and a ray cast

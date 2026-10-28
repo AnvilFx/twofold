@@ -161,6 +161,19 @@ struct World::Impl {
     Body worldBody;
     StepProfile profile;
 
+    // Sensor shapes in index order, and the sorted keys of sensor and visitor pairs overlapping after the
+    // last step, with the sensor in the high half.
+    std::vector<uint32_t> sensors;
+    std::vector<uint64_t> sensorPairs;
+    // A call moved, reshaped or refiltered a shape, so the next step tests still pairs again too.
+    bool sensorsStale = false;
+    std::vector<ContactEvent> contactEvents;
+    std::vector<HitEvent> hitEvents;
+    std::vector<SensorEvent> sensorEvents;
+    // Events from calls between steps, reported with the next step.
+    std::vector<ContactEvent> queuedContactEvents;
+    std::vector<SensorEvent> queuedSensorEvents;
+
     explicit Impl(const WorldSettings& s) {
         worldBody.alive = true;
         worldBody.type = MotionType::Static;
@@ -217,7 +230,7 @@ struct World::Impl {
     }
 
     bool pairable(const Shape& a, const Shape& b) const {
-        return a.body != b.body &&
+        return a.body != b.body && !a.sensor && !b.sensor &&
                (bodies[a.body].type == MotionType::Dynamic || bodies[b.body].type == MotionType::Dynamic);
     }
 
@@ -293,6 +306,15 @@ struct World::Impl {
     BodyId bodyId(uint32_t i) const { return { i, bodies[i].generation }; }
     ShapeId shapeId(uint32_t i) const { return { i, shapes[i].generation }; }
 
+    ContactEvent contactEvent(const Contact& c, bool begin) const {
+        return { bodyId(c.bodyA), bodyId(c.bodyB), shapeId(c.shapeA), shapeId(c.shapeB), begin };
+    }
+
+    SensorEvent sensorEvent(uint64_t key, bool begin) const {
+        const uint32_t s = (uint32_t)(key >> 32), v = (uint32_t)key;
+        return { bodyId(shapes[s].body), bodyId(shapes[v].body), shapeId(s), shapeId(v), begin };
+    }
+
     void updateMass(Body& b) {
         MassProperties mp;
         if (b.massOverride) {
@@ -301,6 +323,7 @@ struct World::Impl {
             Vec3 weighted;
             std::vector<MassProperties> parts;
             for (uint32_t si : b.shapes) {
+                if (shapes[si].sensor) { continue; }
                 const MassProperties sm = shapeMass(shapes[si]);
                 if (sm.mass <= 0.0f) { continue; }
                 mp.mass += sm.mass;
@@ -328,7 +351,7 @@ struct World::Impl {
         b.extent = 0.0f;
         for (uint32_t si : b.shapes) {
             const Shape& s = shapes[si];
-            if (s.kind == ShapeKind::HalfSpace) { continue; }
+            if (s.kind == ShapeKind::HalfSpace || s.sensor) { continue; }
             b.extent = maxf(b.extent, s.extent + length(s.local.p - b.localCenter));
         }
         updateInverseMass(b);
@@ -398,9 +421,9 @@ struct World::Impl {
     }
 
     // Marks the body's contacts that pick accepts as removed, for the next step to drop, and returns the
-    // dynamic bodies they touched.
+    // dynamic bodies they touched. When their shapes are going away, touching pairs end now.
     template <class Pick>
-    std::vector<uint32_t> dropContacts(uint32_t body, Pick&& pick) {
+    std::vector<uint32_t> dropContacts(uint32_t body, bool ending, Pick&& pick) {
         if (!linksValid) { buildLinks(); }
         std::vector<uint32_t> touched;
         if (body + 1 >= linkStart.size()) { return touched; }
@@ -410,7 +433,11 @@ struct World::Impl {
             bool hit = false;
             auto it = std::lower_bound(contacts.begin(), contacts.end(), l.key,
                                        [](const Contact& x, uint64_t key) { return x.key < key; });
+            if (ending && it != contacts.end() && it->key == l.key && it->touched) {
+                queuedContactEvents.push_back(contactEvent(*it, false));
+            }
             for (; it != contacts.end() && it->key == l.key; ++it) {
+                if (ending) { it->touched = false; }
                 if (it->removed) { continue; }
                 it->removed = true;
                 it->reusable = false;
@@ -423,15 +450,29 @@ struct World::Impl {
     }
 
     // All of a body's contacts, or those of one of its shapes.
-    void removeContacts(uint32_t body, int shape) {
-        wakeBodies(dropContacts(body, [&](const Link& l) {
+    void removeContacts(uint32_t body, int shape, bool ending) {
+        wakeBodies(dropContacts(body, ending, [&](const Link& l) {
             return shape < 0 || (uint32_t)(l.key >> 32) == (uint32_t)shape || (uint32_t)l.key == (uint32_t)shape;
         }));
     }
 
     // Contacts of a body that stopped being dynamic, with bodies that aren't dynamic either.
     void removeAnchoredContacts(uint32_t body) {
-        dropContacts(body, [&](const Link& l) { return bodies[l.other].type != MotionType::Dynamic; });
+        dropContacts(body, false, [&](const Link& l) { return bodies[l.other].type != MotionType::Dynamic; });
+    }
+
+    // Ends the sensor overlaps of shapes that pick accepts, which are going away.
+    template <class Pick>
+    void dropSensorPairs(Pick&& pick) {
+        size_t kept = 0;
+        for (uint64_t key : sensorPairs) {
+            if (pick((uint32_t)(key >> 32)) || pick((uint32_t)key)) {
+                queuedSensorEvents.push_back(sensorEvent(key, false));
+                continue;
+            }
+            sensorPairs[kept++] = key;
+        }
+        sensorPairs.resize(kept);
     }
 
     // Sleeping bodies an anchor was moved into have no contact with it yet.
@@ -440,13 +481,14 @@ struct World::Impl {
         std::vector<uint32_t> found;
         for (uint32_t ai : bodies[anchor].shapes) {
             const Shape& sa = shapes[ai];
+            if (sa.sensor) { continue; }
             const Transform xa = bodies[anchor].xf * sa.local;
             const Vec3 n = xa.q.rotate({ 0, 0, 1 });
             found.clear();
             forEachNear(sa, sa.lo, sa.hi, [&](uint32_t si) {
                 const Shape& sb = shapes[si];
                 const Body& b = bodies[sb.body];
-                if (b.type != MotionType::Dynamic || b.awake) { return; }
+                if (sb.sensor || b.type != MotionType::Dynamic || b.awake) { return; }
                 if (!(sa.category & sb.mask) || !(sb.category & sa.mask)) { return; }
                 const Vec3 blo = sb.lo - grow, bhi = sb.hi + grow;
                 if (!boxesOverlap(sa.lo, sa.hi, blo, bhi)) { return; }
@@ -657,6 +699,7 @@ struct World::Impl {
             const bool hasOld = old != oldEnd;
             bool keep = hasOld;
             for (auto it = old; it != oldEnd && keep; ++it) { keep = stillFits(*it, ba, bb); }
+            const bool touched = hasOld && old->touched;
 
             const size_t first = next.size();
             if (keep) {
@@ -677,6 +720,7 @@ struct World::Impl {
                 c.shapeB = ib;
                 c.bodyA = sa.body;
                 c.bodyB = sb.body;
+                c.touched = touched;
                 c.normal = m.normal;
                 c.tangent1 = perpendicular(m.normal);
                 c.tangent2 = cross(m.normal, c.tangent1);
@@ -710,11 +754,27 @@ struct World::Impl {
         }
 
         const size_t collided = next.size();
+        // A touching pair that wasn't collided again or carried over has ended. Both lists are in key order.
+        size_t probe = 0;
+        uint64_t ended = 0;
+        auto lose = [&](const Contact& c) {
+            if (!c.touched || c.key == ended) { return; }
+            while (probe < collided && next[probe].key < c.key) { ++probe; }
+            if (probe < collided && next[probe].key == c.key) { return; }
+            contactEvents.push_back(contactEvent(c, false));
+            ended = c.key;
+        };
         for (const Contact& c : contacts) {
             const Body& a = bodies[c.bodyA];
             const Body& b = bodies[c.bodyB];
-            if (c.removed || movingAwake(a) || movingAwake(b)) { continue; }
-            if (a.type != MotionType::Dynamic && b.type != MotionType::Dynamic) { continue; }
+            if (c.removed || movingAwake(a) || movingAwake(b)) {
+                lose(c);
+                continue;
+            }
+            if (a.type != MotionType::Dynamic && b.type != MotionType::Dynamic) {
+                lose(c);
+                continue;
+            }
             next.push_back(c);
         }
         std::inplace_merge(next.begin(), next.begin() + (std::ptrdiff_t)collided, next.end(), [](const Contact& a, const Contact& b) {
@@ -987,7 +1047,7 @@ struct World::Impl {
             const float moved = length(b.com - b.com0);
             for (uint32_t si : b.shapes) {
                 const Shape& s = shapes[si];
-                if (s.kind == ShapeKind::Mesh) { continue; }
+                if (s.kind == ShapeKind::Mesh || s.sensor) { continue; }
                 if (moved + sweeps[bi].angle * reach(s, b) > b.expectedTravel + 0.5f * innerExtent(s, b)) {
                     fast[si] = 1;
                     any = true;
@@ -1020,7 +1080,7 @@ struct World::Impl {
             const Shape& sf = shapes[fi];
             forEachNear(sf, sweptLo[fi], sweptHi[fi], [&](uint32_t oi) {
                 const Shape& so = shapes[oi];
-                if (so.body == sf.body || joined(so.body, sf.body)) { return; }
+                if (so.sensor || so.body == sf.body || joined(so.body, sf.body)) { return; }
                 sweptBounds(oi);
                 if (!boxesOverlap(sweptLo[fi], sweptHi[fi], sweptLo[oi], sweptHi[oi])) { return; }
                 if (!(sf.category & so.mask) || !(so.category & sf.mask)) { return; }
@@ -1120,11 +1180,141 @@ struct World::Impl {
         }
     }
 
+    // Counts touching contacts and reports the pairs that started or stopped touching, and the hits. A pair
+    // starts when the solver pushed on it or it overlaps, and stops once neither holds and every point is
+    // further apart than the linear slop. Contacts of sleeping pairs keep their last solve, so they stay put.
+    void reportTouches() {
+        // Only contacts solved this step have fresh approach speeds.
+        auto solved = [&](const Contact& c) {
+            const Body& a = bodies[c.bodyA];
+            const Body& b = bodies[c.bodyB];
+            return (a.type == MotionType::Dynamic && a.awake) || (b.type == MotionType::Dynamic && b.awake);
+        };
+        profile.touchingContacts = 0;
+        size_t last = 0;
+        for (size_t first = 0; first < contacts.size(); first = last) {
+            const uint64_t key = contacts[first].key;
+            const bool was = contacts[first].touched;
+            const float apart = was ? tol.linearSlop : 0.0f;
+            bool touching = false;
+            float fastest = settings.hitThreshold * settings.lengthUnit;
+            const Contact* struck = nullptr;
+            int point = 0;
+            for (last = first; last < contacts.size() && contacts[last].key == key; ++last) {
+                const Contact& c = contacts[last];
+                if (c.touching()) { ++profile.touchingContacts; }
+                for (int i = 0; i < c.count; ++i) {
+                    const ContactPoint& p = c.points[i];
+                    if (p.maxNormalImpulse > 0.0f) {
+                        touching = true;
+                        if (-p.relativeVelocity > fastest && solved(c)) {
+                            fastest = -p.relativeVelocity;
+                            struck = &c;
+                            point = i;
+                        }
+                    } else if (p.separation < apart) {
+                        touching = true;
+                    }
+                }
+            }
+            if (touching != was) {
+                contactEvents.push_back(contactEvent(contacts[first], touching));
+                for (size_t k = first; k < last; ++k) { contacts[k].touched = touching; }
+            }
+            if (struck) {
+                const Vec3 p = bodies[struck->bodyA].xf.apply(struck->points[point].localA);
+                hitEvents.push_back({ bodyId(struck->bodyA), bodyId(struck->bodyB), shapeId(struck->shapeA),
+                                      shapeId(struck->shapeB), p, struck->normal, fastest });
+            }
+        }
+    }
+
+    bool meshOverlaps(const Shape& mesh, const Shape& other) const {
+        const TriangleMesh::Data* m = meshOf(mesh);
+        if (!m || other.kind == ShapeKind::HalfSpace) { return false; }
+        const Transform xm = bodies[mesh.body].xf * mesh.local;
+        const Transform xo = bodies[other.body].xf * other.local;
+        const Convex co = convexOf(other);
+        Vec3 lo, hi;
+        boundsInMesh(xm, other.lo, other.hi, lo, hi);
+        bool any = false;
+        m->query(lo, hi, [&](int t) {
+            if (any) { return; }
+            Vec3 c[3];
+            m->corners(t, c);
+            any = distance({ c, 3, 0.0f, false }, xm, co, xo).distance <= 0.0f;
+        });
+        return any;
+    }
+
+    // Two meshes, a mesh and a half-space, or two half-spaces never overlap, as they never collide.
+    bool overlapping(const Shape& a, const Shape& b) const {
+        if (a.kind == ShapeKind::Mesh) { return b.kind != ShapeKind::Mesh && meshOverlaps(a, b); }
+        if (b.kind == ShapeKind::Mesh) { return meshOverlaps(b, a); }
+        return distance(convexOf(a), bodies[a.body].xf * a.local, convexOf(b), bodies[b.body].xf * b.local).distance <=
+               0.0f;
+    }
+
+    // Finds what overlaps each sensor at the end of the step, and reports what changed. A pair of shapes
+    // that both stayed still keeps its last result.
+    void updateSensors() {
+        if (sensors.empty()) { return; }
+        std::vector<uint64_t> found;
+        std::vector<uint32_t> near;
+        size_t old = 0;
+        for (uint32_t si : sensors) {
+            const Shape& s = shapes[si];
+            const bool moving = sensorsStale || movingAwake(bodies[s.body]);
+            while (old < sensorPairs.size() && (uint32_t)(sensorPairs[old] >> 32) < si) { ++old; }
+            size_t oldEnd = old;
+            while (oldEnd < sensorPairs.size() && (uint32_t)(sensorPairs[oldEnd] >> 32) == si) { ++oldEnd; }
+            near.clear();
+            forEachNear(s, s.lo, s.hi, [&](uint32_t vi) { near.push_back(vi); });
+            std::sort(near.begin(), near.end());
+            for (uint32_t vi : near) {
+                const Shape& v = shapes[vi];
+                if (v.sensor || v.body == s.body || !(s.category & v.mask) || !(v.category & s.mask)) { continue; }
+                if (!boxesOverlap(s.lo, s.hi, v.lo, v.hi)) { continue; }
+                const uint64_t key = pairKey(si, vi);
+                bool inside;
+                if (moving || movingAwake(bodies[v.body])) {
+                    inside = overlapping(s, v);
+                } else {
+                    inside = std::binary_search(sensorPairs.begin() + (std::ptrdiff_t)old,
+                                                sensorPairs.begin() + (std::ptrdiff_t)oldEnd, key);
+                }
+                if (inside) { found.push_back(key); }
+            }
+            old = oldEnd;
+        }
+        sensorsStale = false;
+
+        size_t i = 0, j = 0;
+        while (i < sensorPairs.size() || j < found.size()) {
+            if (j == found.size() || (i < sensorPairs.size() && sensorPairs[i] < found[j])) {
+                sensorEvents.push_back(sensorEvent(sensorPairs[i++], false));
+            } else if (i == sensorPairs.size() || found[j] < sensorPairs[i]) {
+                sensorEvents.push_back(sensorEvent(found[j++], true));
+            } else {
+                ++i;
+                ++j;
+            }
+        }
+        sensorPairs.swap(found);
+    }
+
     void step(float dt) {
         if (dt <= 0.0f) { return; }
         const Clock::time_point start = Clock::now();
         const int n = std::max(1, settings.substeps);
         const float h = dt / (float)n;
+
+        contactEvents.swap(queuedContactEvents);
+        queuedContactEvents.clear();
+        sensorEvents.swap(queuedSensorEvents);
+        queuedSensorEvents.clear();
+        hitEvents.clear();
+        const size_t queued = contactEvents.size();
 
         std::vector<uint32_t> pulled;
         for (const Joint& j : joints) {
@@ -1137,6 +1327,7 @@ struct World::Impl {
         wakeBodies(pulled);
 
         updateContacts(dt);
+        const size_t lost = contactEvents.size();
 
         for (Body& b : bodies) {
             if (!b.alive) { continue; }
@@ -1213,9 +1404,13 @@ struct World::Impl {
             }
         }
         profile.solver = millisecondsSince(solveStart);
-        profile.touchingContacts = 0;
-        for (const Contact& c : contacts) {
-            if (c.touching()) { ++profile.touchingContacts; }
+        reportTouches();
+        if (lost > queued && contactEvents.size() > lost) {
+            auto byPair = [](const ContactEvent& a, const ContactEvent& b) {
+                return a.shapeA.index != b.shapeA.index ? a.shapeA.index < b.shapeA.index : a.shapeB.index < b.shapeB.index;
+            };
+            auto first = contactEvents.begin() + (std::ptrdiff_t)queued;
+            std::inplace_merge(first, contactEvents.begin() + (std::ptrdiff_t)lost, contactEvents.end(), byPair);
         }
 
         for (Body& b : bodies) {
@@ -1242,6 +1437,7 @@ struct World::Impl {
         const Clock::time_point continuousStart = Clock::now();
         solveContinuous();
         profile.continuous = millisecondsSince(continuousStart);
+        updateSensors();
         const Clock::time_point sleepStart = Clock::now();
         updateSleep(dt);
         profile.sleep = millisecondsSince(sleepStart);
@@ -1307,12 +1503,16 @@ void World::destroyBody(BodyId id) {
     Impl& w = *impl_;
     Body* b = w.get(id);
     if (!b) { return; }
-    w.removeContacts(id.index, -1);
+    w.removeContacts(id.index, -1, true);
     for (uint32_t ji = 0; ji < w.joints.size(); ++ji) {
         const Joint& j = w.joints[ji];
         if (j.alive && (j.bodyA == id.index || j.bodyB == id.index)) { w.destroyJoint(ji); }
     }
+    if (!w.sensorPairs.empty()) {
+        w.dropSensorPairs([&](uint32_t si) { return w.shapes[si].body == id.index; });
+    }
     for (uint32_t si : b->shapes) {
+        if (w.shapes[si].sensor) { w.sensors.erase(std::find(w.sensors.begin(), w.sensors.end(), si)); }
         w.untrack(si);
         w.shapes[si].alive = false;
         ++w.shapes[si].generation;
@@ -1360,6 +1560,7 @@ ShapeId World::addShape(BodyId id, const ShapeDesc& d) {
     s.rollingResistance = d.rollingResistance;
     s.category = d.category;
     s.mask = d.mask;
+    s.sensor = d.sensor;
     s.userData = d.userData;
     buildShape(s);
 
@@ -1367,6 +1568,8 @@ ShapeId World::addShape(BodyId id, const ShapeDesc& d) {
     body.shapes.push_back(i);
     w.track(i);
     w.updateMass(body);
+    if (s.sensor) { w.sensors.insert(std::lower_bound(w.sensors.begin(), w.sensors.end(), i), i); }
+    w.sensorsStale = true;
     return w.shapeId(i);
 }
 
@@ -1375,7 +1578,9 @@ void World::removeShape(ShapeId id) {
     Shape* s = w.get(id);
     if (!s) { return; }
     const uint32_t bi = s->body;
-    w.removeContacts(bi, (int)id.index);
+    w.removeContacts(bi, (int)id.index, true);
+    if (!w.sensorPairs.empty()) { w.dropSensorPairs([&](uint32_t si) { return si == id.index; }); }
+    if (s->sensor) { w.sensors.erase(std::find(w.sensors.begin(), w.sensors.end(), id.index)); }
     Body& b = w.bodies[bi];
     b.shapes.erase(std::remove(b.shapes.begin(), b.shapes.end(), id.index), b.shapes.end());
     w.untrack(id.index);
@@ -1383,7 +1588,7 @@ void World::removeShape(ShapeId id) {
     ++s->generation;
     w.freeShapes.push_back(id.index);
     w.updateMass(b);
-    w.wakeBodies({ bi });
+    if (!s->sensor) { w.wakeBodies({ bi }); }
 }
 
 bool World::isValid(ShapeId id) const { return impl_->get(id) != nullptr; }
@@ -1447,6 +1652,7 @@ void World::setGeometry(ShapeId id, const Geometry& geometry) {
     }
     w.updateMass(w.bodies[s->body]);
     w.wakeBodies({ s->body });
+    w.sensorsStale = true;
 }
 
 void World::setLocalTransform(ShapeId id, const Vec3& position, const Quat& rotation) {
@@ -1461,6 +1667,7 @@ void World::setLocalTransform(ShapeId id, const Vec3& position, const Quat& rota
     }
     w.updateMass(w.bodies[s->body]);
     w.wakeBodies({ s->body });
+    w.sensorsStale = true;
 }
 
 void World::setFriction(ShapeId id, float friction) {
@@ -1481,7 +1688,8 @@ void World::setFilter(ShapeId id, uint32_t category, uint32_t mask) {
     if (!s) { return; }
     s->category = category;
     s->mask = mask;
-    w.removeContacts(s->body, (int)id.index);
+    w.removeContacts(s->body, (int)id.index, false);
+    w.sensorsStale = true;
 }
 
 Transform World::transform(BodyId id) const {
@@ -1506,6 +1714,7 @@ void World::setTransform(BodyId id, const Vec3& position, const Quat& rotation) 
     b->hasTarget = false;
     w.place(id.index);
     w.wakeBodies({ id.index });
+    w.sensorsStale = true;
 }
 
 Vec3 World::linearVelocity(BodyId id) const {
@@ -1794,9 +2003,16 @@ JointId World::createJoint(const JointDesc& d) {
     j.restTurn = a.xf.q.conjugate() * b.xf.q;
 
     if (!j.collideConnected && ai != kWorldBody) {
-        w.contacts.erase(std::remove_if(w.contacts.begin(), w.contacts.end(), [&](const Contact& c) {
+        auto between = [&](const Contact& c) {
             return (c.bodyA == j.bodyA && c.bodyB == j.bodyB) || (c.bodyA == j.bodyB && c.bodyB == j.bodyA);
-        }), w.contacts.end());
+        };
+        for (size_t ci = 0; ci < w.contacts.size(); ++ci) {
+            const Contact& c = w.contacts[ci];
+            if (c.touched && between(c) && (ci == 0 || w.contacts[ci - 1].key != c.key)) {
+                w.queuedContactEvents.push_back(w.contactEvent(c, false));
+            }
+        }
+        w.contacts.erase(std::remove_if(w.contacts.begin(), w.contacts.end(), between), w.contacts.end());
     }
     w.updateJoinedPairs();
     w.linksValid = false;
@@ -1899,6 +2115,15 @@ std::vector<ContactInfo> World::contacts(bool includeSpeculative) const {
     return out;
 }
 
+const std::vector<ContactEvent>& World::contactEvents() const { return impl_->contactEvents; }
+const std::vector<HitEvent>& World::hitEvents() const { return impl_->hitEvents; }
+const std::vector<SensorEvent>& World::sensorEvents() const { return impl_->sensorEvents; }
+
+bool World::isSensor(ShapeId id) const {
+    const Shape* s = impl_->get(id);
+    return s && s->sensor;
+}
+
 bool World::castRay(const Vec3& origin, const Vec3& translation, RayHit& hit, uint32_t mask) const {
     const Impl& w = *impl_;
     const Vec3 end = origin + translation;
@@ -1911,7 +2136,7 @@ bool World::castRay(const Vec3& origin, const Vec3& translation, RayHit& hit, ui
     std::sort(near.begin(), near.end());
     for (uint32_t si : near) {
         const Shape& s = w.shapes[si];
-        if (!(s.category & mask)) { continue; }
+        if (s.sensor || !(s.category & mask)) { continue; }
         if (!boxesOverlap(s.lo, s.hi, lo, hi)) { continue; }
         const Transform xf = w.bodies[s.body].xf * s.local;
         float fraction;
@@ -1969,7 +2194,7 @@ bool World::castRayAll(const Vec3& origin, const Vec3& translation, std::vector<
     for (size_t i = 0; i < hits.size(); ++i) {
         const uint32_t si = hits[i].shape.index;
         const Shape& s = w.shapes[si];
-        if (!(s.category & mask) || !boxesOverlap(s.lo, s.hi, lo, hi)) { continue; }
+        if (s.sensor || !(s.category & mask) || !boxesOverlap(s.lo, s.hi, lo, hi)) { continue; }
         const Transform xf = w.bodies[s.body].xf * s.local;
         float fraction;
         Vec3 normal;
@@ -2007,7 +2232,7 @@ bool World::castGeometry(const Geometry& geometry, const Transform& pose, const 
     for (uint32_t si : near) {
         if (found && best == 0.0f) { break; }
         const Shape& s = w.shapes[si];
-        if (!(s.category & mask)) { continue; }
+        if (s.sensor || !(s.category & mask)) { continue; }
         if (s.kind != ShapeKind::HalfSpace && !segmentHitsBox(s.lo - reach, s.hi + reach, center, translation, best)) {
             continue;
         }
@@ -2043,7 +2268,7 @@ bool World::overlapGeometry(const Geometry& geometry, const Transform& pose, std
     w.tree.query(lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
     return keepSorted(found, [&](uint32_t si) {
         const Shape& s = w.shapes[si];
-        if (!(s.category & mask)) { return false; }
+        if (s.sensor || !(s.category & mask)) { return false; }
         if (s.kind != ShapeKind::HalfSpace && !boxesOverlap(s.lo, s.hi, lo, hi)) { return false; }
         return shapesOverlap(s, w.bodies[s.body].xf * s.local, q, pose, touch);
     });
@@ -2057,7 +2282,7 @@ bool World::overlapAabb(const Aabb& box, std::vector<ShapeId>& found, uint32_t m
     const Vec3 c = (box.lower + box.upper) * 0.5f, e = (box.upper - box.lower) * 0.5f;
     return keepSorted(found, [&](uint32_t si) {
         const Shape& s = w.shapes[si];
-        if (!(s.category & mask)) { return false; }
+        if (s.sensor || !(s.category & mask)) { return false; }
         if (s.kind != ShapeKind::HalfSpace) { return boxesOverlap(s.lo, s.hi, box.lower, box.upper); }
         const Transform xf = w.bodies[s.body].xf * s.local;
         const Vec3 n = xf.q.rotate({ 0, 0, 1 });
@@ -2074,7 +2299,7 @@ bool World::overlapPoint(const Vec3& point, std::vector<ShapeId>& found, uint32_
     w.tree.query(lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
     return keepSorted(found, [&](uint32_t si) {
         const Shape& s = w.shapes[si];
-        if (!(s.category & mask)) { return false; }
+        if (s.sensor || !(s.category & mask)) { return false; }
         if (s.kind != ShapeKind::HalfSpace && !boxesOverlap(s.lo, s.hi, lo, hi)) { return false; }
         return shapeContains(s, w.bodies[s.body].xf * s.local, point, touch);
     });

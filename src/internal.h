@@ -112,6 +112,7 @@ struct Shape {
     float rollingResistance = 0.0f;
     uint32_t category = 1;
     uint32_t mask = 0xffffffffu;
+    bool sensor = false;
     void* userData = nullptr;
 
     ShapeKind kind = ShapeKind::Convex;
@@ -376,6 +377,8 @@ struct Contact {
     bool reusable = false;
     // A contact removed between steps stays in place until the next step drops it.
     bool removed = false;
+    // The pair was touching after the last step, as contact events report it. Every contact of a pair agrees.
+    bool touched = false;
 
     bool touching() const {
         for (int i = 0; i < count; ++i) {
