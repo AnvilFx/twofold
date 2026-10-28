@@ -3,6 +3,17 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 20:26
+
+Continuous collision stopped short of flat faces, a few millimeters on a box or a cylinder
+cap and 15 mm on 5 m cylinders. Near a face GJK ends on a long thin triangle, and the float
+barycentric weights tilted its normal by about a hundredth of a radian. The distance stayed
+right but the gap along the normal didn't, and that gap sets each advance. The weights are
+now found in double, and swept shapes stop within about a millimeter of the slop.
+Rain and Meshes change. Over six seed sets Meshes overlaps less (frames past 10 mm from
+15099 to 11529), Rain is the same within noise and Hulls is unchanged. Both scenes run a
+little faster.
+
 ## 2026-10-28 19:06
 
 Swing-twist joints, for ragdolls. The swing stays in an elliptical cone and the twist in a
