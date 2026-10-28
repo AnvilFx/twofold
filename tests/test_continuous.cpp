@@ -132,6 +132,43 @@ TEST(swept_cylinder_stops_short_of_another_cylinder) {
     CHECK(closest > 0.0f && closest < 0.02f);
 }
 
+TEST(swept_box_stops_within_reach_of_a_cylinder) {
+    const Box box{ { 0.3f, 0.2f, 0.25f } };
+    float farthest = 0.0f, nearest = INFINITY;
+    int impacts = 0;
+    for (int trial = 0; trial < 1000; ++trial) {
+        World w = weightless();
+        const float t = (float)trial;
+        const Quat qc = normalize(Quat{ std::sin(t), std::cos(1.3f * t), std::sin(2.9f * t), std::cos(0.7f * t) });
+        addBody(w, MotionType::Static, {}, Cylinder{ 0.5f, 0.3f }, qc);
+        BodyDesc bd;
+        bd.position = normalize(Vec3{ std::sin(4.3f * t), std::cos(2.7f * t), std::sin(1.1f * t + 1.0f) }) * 2.0f;
+        bd.rotation = normalize(Quat{ std::cos(3.1f * t), std::sin(1.9f * t), std::cos(2.3f * t), std::sin(0.3f * t) });
+        const BodyId b = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = box;
+        sd.category = 2;
+        w.addShape(b, sd);
+        const Vec3 aim = Vec3{ std::sin(t), std::cos(t), 0 } * 0.2f - bd.position * 1.5f;
+        w.addForce(b, aim * (w.massProperties(b).mass / (kDt * kDt)));
+        w.step(kDt);
+        if (w.profile().impacts == 0) { continue; }
+        ++impacts;
+        // The cast finds where the box would first touch along its path. The stop should be the slop short of
+        // that, measured along the normal there.
+        const Vec3 along = normalize(aim);
+        CastHit hit;
+        CHECK(w.castGeometry(box, w.transform(b), along * 0.1f, hit, 1));
+        CHECK(!hit.initialOverlap);
+        const float gap = hit.fraction * 0.1f * std::fabs(dot(along, hit.normal));
+        farthest = std::fmax(farthest, gap);
+        nearest = std::fmin(nearest, gap);
+    }
+    CHECK(impacts > 900);
+    CHECK(nearest > 0.003f);
+    CHECK(farthest < 0.0065f);
+}
+
 TEST(slow_bodies_are_not_swept) {
     World w;
     addBody(w, MotionType::Static, { 0, -0.5f, 0 }, Box{ { 5, 0.5f, 5 } });

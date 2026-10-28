@@ -491,7 +491,7 @@ Shapes within 0.01 mm, scaled by `lengthUnit`, touch. Overlaps and casts use the
 distance, query geometry first, so a cast's hit is found by an overlap query at the hit
 pose. GJK can stop above the true distance on a cylinder by an amount that depends on
 argument order, so near touch both orders are tried and the smaller kept. Casts don't use
-`timeOfImpact`, which stops early on cylinder caps.
+`timeOfImpact`, which stops the slop short of the touch.
 
 See [decision 25](decisions/0025-queries-share-one-touch-test.md).
 
