@@ -23,7 +23,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `include/twofold/mesh.h` | `TriangleMesh` |
 | `include/twofold/outline.h` | Alpha tracing, contour simplification, convex decomposition |
 | `src/internal.h` | Internal types shared by the source files |
-| `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping, continuous collision |
+| `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping, continuous collision, events, sensors |
 | `src/tree.h`, `src/tree.cpp` | The dynamic AABB tree behind the broadphase and queries |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
 | `src/joint.cpp` | Joint warm starting, the joint solve and the settle pass |
@@ -140,10 +140,11 @@ every input point.
    - integrate positions
    - relax: solve joints and contacts again without bias, then again for impact contacts
 5. **Restitution.** One pass over points that were approaching faster than the threshold.
-   Then the settle pass moves jointed bodies to close what joint error is left.
+   Then the settle pass moves jointed bodies to close what joint error is left, and pairs
+   that started or stopped touching are reported.
 6. **Clean up.** Forces and torques clear, and kinematic bodies snap to their targets.
 7. **Continuous collision.** Bodies that moved well past what their speculative contacts
-   covered are swept and moved back.
+   covered are swept and moved back. Then sensors find what overlaps them.
 8. **Sleep.** Islands are rebuilt and the ones that have been slow long enough fall asleep.
 
 ### Broadphase
@@ -491,6 +492,70 @@ stops being dynamic loses its contacts with static and kinematic bodies.
 
 See [decision 10](decisions/0010-moved-anchors-wake-what-they-overlap.md).
 
+## Events and sensors
+
+Each step collects contact, hit and sensor events, read with `contactEvents`, `hitEvents`
+and `sensorEvents` until the next step. Contact and hit events are ordered by the shape
+pair, lower index first, and sensor events by the sensor and then the visitor. Events from
+calls made between steps come first, in the order of the calls. A copied world reports
+exactly what the original does.
+
+### Touches
+
+Every contact keeps whether its pair was touching after the last step. All the contacts of
+a mesh pair agree, so a pair begins and ends once however many facings it has.
+
+After the solve, a pair is touching when the solver pushed on any of its points in some
+substep, or a point overlaps. A speculative point only takes an impulse when its gap would
+close within the substep, so shapes that pass close without meeting report nothing. Once
+touching, a pair holds until nothing pushes on it and every point is further apart than the
+linear slop. Resting contacts are springs that hover around zero overlap, and without that
+margin a box at rest could end and begin again.
+
+A pair also ends when its contacts disappear at the start of the step: its bounds moved
+apart, the narrowphase found nothing, or a filter or motion type change dropped it. New
+contacts of a pair take the state of its old ones, removed ones included, so a pair that
+still touches after its filter changed reports nothing. Destroying a body or shape, and a
+joint that stops its bodies colliding, end the touching pairs at once with the ids from
+before the call. They are reported with the next step, and a shape slot reused before then
+starts with no touches.
+
+Sleeping pairs are not solved and keep the impulses of their last solve, so their state
+holds and they report nothing, before or after they wake.
+
+A hit is the fastest point of a pair that the solver pushed on, when it approached faster
+than `hitThreshold` at the start of the step, 1 m/s by default. It carries that speed, the
+point and the pair's normal from shape A to shape B. A pair gives at most one hit a step,
+and only pairs solved in the step count.
+
+Events are always on. Touches and hits come from the pass over contacts that already counts
+the touching ones, and ends at the start of the step from the contacts the narrowphase
+drops.
+
+### Sensors
+
+A shape with `ShapeDesc::sensor` set never collides. It has no contacts and no mass, doesn't
+count toward its body's extent, and is skipped by continuous collision, waking, rays and
+queries. Adding a sensor changes nothing about how bodies move.
+
+After continuous collision, each sensor queries the tree with its bounds. A shape it reaches
+is a visitor when it is not a sensor, is on another body, and passes the same category and
+mask test as a collision. Shapes on static, kinematic, dynamic and sleeping bodies all
+count, and a sensor works on a body of any type. Joints don't hide shapes from sensors.
+Overlap is a GJK distance of zero or less between the shapes' 3D geometry, also for planar
+bodies, and against a mesh, against each triangle the other shape's bounds reach. Two meshes,
+a mesh and a half-space, or two half-spaces never overlap, as they never collide.
+
+A pair where neither body is moving keeps its last result. Adding a shape, or moving,
+reshaping or refiltering one, makes the next step test every pair again. The pairs found
+are kept sorted, and the difference from the last step gives the begin and end events. A
+sensor never wakes what it finds, and a sleeping body inside one stays inside.
+
+With no sensors the pass returns at once. Each sensor costs a tree query a step and an
+overlap test for each moving shape it reaches. A half-space sensor visits every shape.
+
+See [decision 26](decisions/0026-events-follow-the-solve-and-sensors-test-overlap.md).
+
 ## Units and tolerances
 
 Every tolerance is in meters and scales with `WorldSettings::lengthUnit`. Linear slop is
@@ -530,7 +595,6 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
 
 ## Known limits
 
-- No contact callbacks yet.
 - Shape casts don't turn, and take only convex geometry. A half-space or mesh as query
   geometry finds nothing.
 - A cast that only grazes a shape, closing on it at almost no speed, can report a miss.

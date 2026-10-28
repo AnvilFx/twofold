@@ -99,6 +99,8 @@ struct ShapeDesc {
     // Two shapes collide when each one's category overlaps the other's mask.
     uint32_t category = 1;
     uint32_t mask = 0xffffffffu;
+    // Reports the shapes overlapping it as sensor events and never collides. A sensor has no mass.
+    bool sensor = false;
     void* userData = nullptr;
 };
 
@@ -198,6 +200,8 @@ struct WorldSettings {
     float contactDampingRatio = 10.0f;
     float maxPushoutSpeed = 3.0f;
     float restitutionThreshold = 1.0f;
+    // Touching pairs that approached faster than this are reported as hits.
+    float hitThreshold = 1.0f;
     float sleepThreshold = 0.05f;
     float timeToSleep = 0.5f;
     // Two bodies that moved and turned (radians) less than these relative to each other since their last
@@ -233,6 +237,38 @@ struct ContactInfo {
     float separations[4] = {};
     float normalImpulses[4] = {};
     Vec3 tangentImpulses[4];
+};
+
+// Two shapes that started or stopped touching. Shape A has the lower index.
+struct ContactEvent {
+    BodyId bodyA;
+    BodyId bodyB;
+    ShapeId shapeA;
+    ShapeId shapeB;
+    // False when they stopped.
+    bool begin = true;
+};
+
+// The fastest approaching point of a touching pair, when faster than WorldSettings::hitThreshold.
+struct HitEvent {
+    BodyId bodyA;
+    BodyId bodyB;
+    ShapeId shapeA;
+    ShapeId shapeB;
+    Vec3 point;
+    // Points from shape A to shape B.
+    Vec3 normal;
+    float speed = 0.0f;
+};
+
+// A shape that started or stopped overlapping a sensor.
+struct SensorEvent {
+    BodyId sensorBody;
+    BodyId visitorBody;
+    ShapeId sensor;
+    ShapeId visitor;
+    // False when it stopped.
+    bool begin = true;
 };
 
 struct JointInfo {
@@ -395,6 +431,13 @@ public:
 
     // Contacts after the last step. Speculative contacts have points that are not yet touching.
     std::vector<ContactInfo> contacts(bool includeSpeculative = false) const;
+
+    // Events of the last step, ordered by shape index. Events from calls made before it, such as destroying
+    // a touching shape, come first in the order of the calls. Ids in them may no longer be valid.
+    const std::vector<ContactEvent>& contactEvents() const;
+    const std::vector<HitEvent>& hitEvents() const;
+    const std::vector<SensorEvent>& sensorEvents() const;
+    bool isSensor(ShapeId shape) const;
 
     // Closest shape hit by the segment from origin to origin + translation, ignoring shapes whose
     // category does not overlap mask and shapes that contain the origin.
