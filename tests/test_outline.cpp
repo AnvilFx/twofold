@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 
@@ -353,4 +354,30 @@ TEST(nearby_outlines_never_cross_when_simplified) {
             for (float x = 0.211f; x < 40.0f; x += 0.0383f) { CHECK(coverCount(pieces, { x, y }) <= 1); }
         }
     }
+}
+
+// Four times the teeth should cost about four times as much, not sixteen.
+TEST(comb_pieces_cost_grows_close_to_linearly) {
+    auto comb = [](int teeth) {
+        const int w = 4 * teeth + 4, h = 200;
+        Canvas c{ w, h, std::vector<uint8_t>((size_t)w * h) };
+        for (int y = 2; y < h - 2; ++y) {
+            for (int x = 2; x < w - 2; ++x) {
+                if (y > h - 20 || x % 4 < 2) { c.alpha[(size_t)y * w + x] = 255; }
+            }
+        }
+        return c;
+    };
+    double ms[2] = { INFINITY, INFINITY };
+    const int teeth[2] = { 500, 2000 };
+    for (int k = 0; k < 2; ++k) {
+        const Canvas c = comb(teeth[k]);
+        for (int run = 0; run < 3; ++run) {
+            const auto start = std::chrono::steady_clock::now();
+            const std::vector<std::vector<Vec2>> pieces = alphaPieces(c.image());
+            ms[k] = std::fmin(ms[k], std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            CHECK((int)pieces.size() == 2 * teeth[k] + 4);
+        }
+    }
+    CHECK(ms[1] < 8.0 * ms[0]);
 }

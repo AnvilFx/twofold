@@ -275,12 +275,19 @@ Impact timeOfImpact(const Convex& a, const Transform& localA, const Sweep& sweep
     const float spin = sweepA.angle * reachA + sweepB.angle * reachB;
     t = 0.0f;
     for (int iter = 0; iter < kMaxAdvances; ++iter) {
-        const DistanceResult r = distance(a, sweepA.at(t) * localA, b, sweepB.at(t) * localB);
+        const Transform xa = sweepA.at(t) * localA, xb = sweepB.at(t) * localB;
+        const DistanceResult r = distance(a, xa, b, xb);
         if (r.distance <= target + tolerance) { return t > 0.0f ? Impact::Hit : Impact::Touching; }
+        // GJK can stop above the true distance. The gap along its normal never is.
+        float gap = r.distance;
+        if (!a.halfSpace && !b.halfSpace) {
+            gap = std::fmin(gap, dot(r.normal, support(b, xb, -r.normal) - support(a, xa, r.normal)) - a.radius - b.radius);
+        }
         // No point of either shape closes the gap along the normal faster than this.
         const float closing = dot(approach, r.normal) + spin;
         if (closing <= 0.0f) { return Impact::Miss; }
-        t += (r.distance - target) / closing;
+        if (gap <= target) { return t > 0.0f ? Impact::Hit : Impact::Touching; }
+        t += (gap - target) / closing;
         if (t >= 1.0f) { return Impact::Miss; }
     }
     return Impact::Hit;

@@ -314,6 +314,7 @@ public:
     float rollingResistance(ShapeId shape) const;
     Aabb bounds(ShapeId shape) const;
     void setGeometry(ShapeId shape, const Geometry& geometry);
+    void setLocalTransform(ShapeId shape, const Vec3& position, const Quat& rotation);
     void setFriction(ShapeId shape, float friction);
     void setRestitution(ShapeId shape, float restitution);
     void setRollingResistance(ShapeId shape, float rollingResistance);

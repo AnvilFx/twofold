@@ -190,21 +190,58 @@ struct Triangle {
 
 void earClip(const std::vector<Vec2>& poly, std::vector<Triangle>& tris) {
     const int n = (int)poly.size();
+    if (n < 3) { return; }
     std::vector<int> prev(n), next(n);
     for (int i = 0; i < n; ++i) {
         prev[i] = (i + n - 1) % n;
         next[i] = (i + 1) % n;
     }
     auto same = [&](int i, int j) { return poly[i].x == poly[j].x && poly[i].y == poly[j].y; };
+
+    // Remaining vertices bucketed in a grid of about n cells, so an ear only tests the vertices near it.
+    Vec2 lo = poly[0], hi = poly[0];
+    for (const Vec2& p : poly) {
+        lo = { std::min(lo.x, p.x), std::min(lo.y, p.y) };
+        hi = { std::max(hi.x, p.x), std::max(hi.y, p.y) };
+    }
+    const float w = hi.x - lo.x, h = hi.y - lo.y;
+    float size = std::max(std::sqrt(w * h / (float)n), std::max(w, h) / (float)n);
+    if (!(size > 0.0f)) { size = 1.0f; }
+    const int cols = std::min((int)(w / size) + 1, n + 1), rows = std::min((int)(h / size) + 1, n + 1);
+    auto col = [&](float x) { return std::min(std::max((int)((x - lo.x) / size), 0), cols - 1); };
+    auto row = [&](float y) { return std::min(std::max((int)((y - lo.y) / size), 0), rows - 1); };
+    std::vector<int> cell(n), start((size_t)cols * rows + 1, 0), live((size_t)cols * rows, 0), slots(n), at(n);
+    for (int i = 0; i < n; ++i) {
+        cell[i] = row(poly[i].y) * cols + col(poly[i].x);
+        ++start[cell[i] + 1];
+    }
+    for (size_t k = 1; k < start.size(); ++k) { start[k] += start[k - 1]; }
+    for (int i = 0; i < n; ++i) {
+        at[i] = start[cell[i]] + live[cell[i]]++;
+        slots[at[i]] = i;
+    }
+
     auto remove = [&](int i) {
         next[prev[i]] = next[i];
         prev[next[i]] = prev[i];
+        const int k = cell[i], last = start[k] + --live[k];
+        slots[at[i]] = slots[last];
+        at[slots[last]] = at[i];
     };
     auto isEar = [&](int i) {
         const int a = prev[i], c = next[i];
-        for (int j = next[c]; j != a; j = next[j]) {
-            if (same(j, a) || same(j, i) || same(j, c)) { continue; }
-            if (insideTriangle(poly[a], poly[i], poly[c], poly[j])) { return false; }
+        const Vec2 pa = poly[a], pi = poly[i], pc = poly[c];
+        const int x0 = col(std::min(std::min(pa.x, pi.x), pc.x)), x1 = col(std::max(std::max(pa.x, pi.x), pc.x));
+        const int y0 = row(std::min(std::min(pa.y, pi.y), pc.y)), y1 = row(std::max(std::max(pa.y, pi.y), pc.y));
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+                const int k = y * cols + x;
+                for (int s = start[k]; s < start[k] + live[k]; ++s) {
+                    const int j = slots[s];
+                    if (j == a || j == i || j == c || same(j, a) || same(j, i) || same(j, c)) { continue; }
+                    if (insideTriangle(pa, pi, pc, poly[j])) { return false; }
+                }
+            }
         }
         return true;
     };
@@ -410,6 +447,7 @@ public:
             out_ = c_;
             return;
         }
+        buildBounds();
         size_t far = 0;
         float best = -1.0f;
         for (size_t i = 1; i < n_; ++i) {
@@ -463,13 +501,89 @@ private:
 
     // Contour point strictly between a and b farthest from their chord, or a when none is beyond floor.
     size_t farthest(size_t a, size_t b, float floor) const {
-        const Vec2 pa = c_[a % n_], pb = c_[b % n_];
-        size_t worst = a;
-        for (size_t i = a + 1; i < b; ++i) {
-            const float e = segmentDistanceSquared(c_[i % n_], pa, pb);
-            if (e > floor) { floor = e; worst = i; }
+        Search s{ c_[a % n_], c_[b % n_], 0, 0, 0, floor, floor, a };
+        if (b <= a + 1) { return a; }
+        for (size_t base = (a + 1) / n_ * n_; base < b; base += n_) {
+            s.first = std::max(a + 1, base) - base;
+            s.last = std::min(b - 1, base + n_ - 1) - base;
+            s.base = base;
+            double exact;
+            if (reach(1, s.a, s.b, exact) > (double)s.best) { scan(1, 0, leaves_ * kRun, s); }
         }
-        return worst;
+        return s.worst;
+    }
+
+    // Contour points first to last, numbered from base, searched for the farthest from the segment ab.
+    struct Search {
+        Vec2 a, b;
+        size_t first, last, base;
+        float floor, best;
+        size_t worst;
+    };
+
+    // Visits the box that reaches farther first and skips boxes that cannot reach past the best so far.
+    // Of equal distances the lowest index wins. Once a point beyond floor is found, boxes are skipped by
+    // their exact reach, so of two distances within rounding of each other either may win.
+    void scan(size_t node, size_t begin, size_t end, Search& s) const {
+        if (node >= leaves_) {
+            for (size_t i = std::max(s.first, begin); i <= std::min(s.last, end - 1); ++i) {
+                const float e = segmentDistanceSquared(c_[i], s.a, s.b);
+                if (e > s.best || (e == s.best && e > s.floor && s.base + i < s.worst)) {
+                    s.best = e;
+                    s.worst = s.base + i;
+                }
+            }
+            return;
+        }
+        const size_t mid = begin + (end - begin) / 2;
+        const size_t lo[2] = { begin, mid }, hi[2] = { mid, end };
+        double r[2] = { -1.0, -1.0 }, exact[2] = { -1.0, -1.0 };
+        for (int k = 0; k < 2; ++k) {
+            if (s.first < hi[k] && lo[k] <= s.last) { r[k] = reach(2 * node + k, s.a, s.b, exact[k]); }
+        }
+        const int near = exact[1] > exact[0] ? 1 : 0;
+        for (const int k : { near, 1 - near }) {
+            if (r[k] <= (double)s.best) { continue; }
+            if (s.best > s.floor && (exact[k] < (double)s.best ||
+                                     (exact[k] == (double)s.best && s.base + std::max(s.first, lo[k]) > s.worst))) {
+                continue;
+            }
+            scan(2 * node + k, lo[k], hi[k], s);
+        }
+    }
+
+    // Strictly above segmentDistanceSquared, rounding included, for every point in the node's box. Exact is
+    // the largest squared distance of the box without rounding.
+    double reach(size_t node, Vec2 pa, Vec2 pb, double& exact) const {
+        const double dx = (double)pb.x - pa.x, dy = (double)pb.y - pa.y, len = dx * dx + dy * dy;
+        double most = 0.0, far = 0.0;
+        for (const Vec2 q : { lo_[node], hi_[node], Vec2{ lo_[node].x, hi_[node].y }, Vec2{ hi_[node].x, lo_[node].y } }) {
+            const double rx = (double)q.x - pa.x, ry = (double)q.y - pa.y;
+            const double t = len > 0.0 ? std::min(std::max((rx * dx + ry * dy) / len, 0.0), 1.0) : 0.0;
+            most = std::max(most, (rx - dx * t) * (rx - dx * t) + (ry - dy * t) * (ry - dy * t));
+            far = std::max(far, rx * rx + ry * ry);
+        }
+        exact = most;
+        // Float rounding moves the distance by a small multiple of 2^-24 times the lengths involved.
+        const double r = std::sqrt(most) + 2e-6 * (std::sqrt(far) + std::sqrt(len)) + 1e-20;
+        return r * r;
+    }
+
+    // A binary tree of boxes over runs of kRun contour points. Leaves start at node leaves_.
+    void buildBounds() {
+        leaves_ = 1;
+        while (leaves_ * kRun < n_) { leaves_ *= 2; }
+        lo_.assign(2 * leaves_, { INFINITY, INFINITY });
+        hi_.assign(2 * leaves_, { -INFINITY, -INFINITY });
+        for (size_t i = 0; i < n_; ++i) {
+            const size_t k = leaves_ + i / kRun;
+            lo_[k] = { std::min(lo_[k].x, c_[i].x), std::min(lo_[k].y, c_[i].y) };
+            hi_[k] = { std::max(hi_[k].x, c_[i].x), std::max(hi_[k].y, c_[i].y) };
+        }
+        for (size_t k = leaves_; k-- > 1;) {
+            lo_[k] = { std::min(lo_[2 * k].x, lo_[2 * k + 1].x), std::min(lo_[2 * k].y, lo_[2 * k + 1].y) };
+            hi_[k] = { std::max(hi_[2 * k].x, hi_[2 * k + 1].x), std::max(hi_[2 * k].y, hi_[2 * k + 1].y) };
+        }
     }
 
     // Slots count kept vertices around the loop and may run past m, so contour indices keep increasing.
@@ -553,9 +667,13 @@ private:
         for (const Corner& c : corners_) { out_.push_back(c.at); }
     }
 
+    static constexpr size_t kRun = 32;
+
     const std::vector<Vec2>& c_;
     size_t n_;
     float tolSq_;
+    std::vector<Vec2> lo_, hi_;
+    size_t leaves_ = 0;
     std::vector<bool> keep_, pinned_;
     std::vector<size_t> kept_;
     size_t m_ = 0;

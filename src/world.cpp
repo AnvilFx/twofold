@@ -145,6 +145,17 @@ struct World::Impl {
     std::vector<uint32_t> freeJoints;
     // Body pairs held by a joint that keeps them from colliding, sorted.
     std::vector<uint64_t> joinedPairs;
+    // What links each body to others for waking: links[linkStart[i]] up to links[linkStart[i + 1]]. Built
+    // when first needed after a step adds contacts or a joint is made. Contacts and joints removed since stay
+    // listed and are skipped.
+    struct Link {
+        uint64_t key;
+        uint32_t other;
+        uint32_t joint;
+    };
+    std::vector<uint32_t> linkStart;
+    std::vector<Link> links;
+    bool linksValid = false;
     Body worldBody;
     StepProfile profile;
 
@@ -378,16 +389,41 @@ struct World::Impl {
         return any;
     }
 
-    void removeContacts(uint32_t body, int shape) {
+    // Marks the body's contacts that pick accepts as removed, for the next step to drop, and returns the
+    // dynamic bodies they touched.
+    template <class Pick>
+    std::vector<uint32_t> dropContacts(uint32_t body, Pick&& pick) {
+        if (!linksValid) { buildLinks(); }
         std::vector<uint32_t> touched;
-        contacts.erase(std::remove_if(contacts.begin(), contacts.end(), [&](const Contact& c) {
-            const bool hit = shape >= 0 ? (c.shapeA == (uint32_t)shape || c.shapeB == (uint32_t)shape)
-                                        : (c.bodyA == body || c.bodyB == body);
-            const uint32_t other = c.bodyA == body ? c.bodyB : c.bodyA;
-            if (hit && bodies[other].type == MotionType::Dynamic) { touched.push_back(other); }
-            return hit;
-        }), contacts.end());
-        wakeBodies(touched);
+        if (body + 1 >= linkStart.size()) { return touched; }
+        for (uint32_t k = linkStart[body]; k < linkStart[body + 1]; ++k) {
+            const Link& l = links[k];
+            if (l.joint != UINT32_MAX || !pick(l)) { continue; }
+            bool hit = false;
+            auto it = std::lower_bound(contacts.begin(), contacts.end(), l.key,
+                                       [](const Contact& x, uint64_t key) { return x.key < key; });
+            for (; it != contacts.end() && it->key == l.key; ++it) {
+                if (it->removed) { continue; }
+                it->removed = true;
+                it->reusable = false;
+                it->count = 0;
+                hit = true;
+            }
+            if (hit && bodies[l.other].type == MotionType::Dynamic) { touched.push_back(l.other); }
+        }
+        return touched;
+    }
+
+    // All of a body's contacts, or those of one of its shapes.
+    void removeContacts(uint32_t body, int shape) {
+        wakeBodies(dropContacts(body, [&](const Link& l) {
+            return shape < 0 || (uint32_t)(l.key >> 32) == (uint32_t)shape || (uint32_t)l.key == (uint32_t)shape;
+        }));
+    }
+
+    // Contacts of a body that stopped being dynamic, with bodies that aren't dynamic either.
+    void removeAnchoredContacts(uint32_t body) {
+        dropContacts(body, [&](const Link& l) { return bodies[l.other].type != MotionType::Dynamic; });
     }
 
     // Sleeping bodies an anchor was moved into have no contact with it yet.
@@ -420,6 +456,59 @@ struct World::Impl {
         }
     }
 
+    void buildLinks() {
+        linkStart.assign(bodies.size() + 1, 0);
+        links.clear();
+        // The contacts of a mesh pair share a key and need one link.
+        auto distinct = [&](size_t ci) { return ci == 0 || contacts[ci - 1].key != contacts[ci].key; };
+        for (size_t ci = 0; ci < contacts.size(); ++ci) {
+            if (!distinct(ci)) { continue; }
+            ++linkStart[contacts[ci].bodyA + 1];
+            ++linkStart[contacts[ci].bodyB + 1];
+        }
+        for (const Joint& j : joints) {
+            if (!j.alive || j.bodyA == kWorldBody) { continue; }
+            ++linkStart[j.bodyA + 1];
+            ++linkStart[j.bodyB + 1];
+        }
+        for (size_t i = 1; i < linkStart.size(); ++i) { linkStart[i] += linkStart[i - 1]; }
+        links.resize(linkStart.back());
+        std::vector<uint32_t> fill(linkStart.begin(), linkStart.end() - 1);
+        for (size_t ci = 0; ci < contacts.size(); ++ci) {
+            if (!distinct(ci)) { continue; }
+            const Contact& c = contacts[ci];
+            links[fill[c.bodyA]++] = { c.key, c.bodyB, UINT32_MAX };
+            links[fill[c.bodyB]++] = { c.key, c.bodyA, UINT32_MAX };
+        }
+        for (uint32_t ji = 0; ji < joints.size(); ++ji) {
+            const Joint& j = joints[ji];
+            if (!j.alive || j.bodyA == kWorldBody) { continue; }
+            links[fill[j.bodyA]++] = { 0, j.bodyB, ji };
+            links[fill[j.bodyB]++] = { 0, j.bodyA, ji };
+        }
+        linksValid = true;
+    }
+
+    // A contact links its bodies while it has points.
+    bool linked(const Link& l) const {
+        if (l.joint != UINT32_MAX) { return joints[l.joint].alive; }
+        auto it = std::lower_bound(contacts.begin(), contacts.end(), l.key,
+                                   [](const Contact& x, uint64_t k) { return x.key < k; });
+        for (; it != contacts.end() && it->key == l.key; ++it) {
+            if (it->count > 0) { return true; }
+        }
+        return false;
+    }
+
+    void pushLinked(uint32_t i, std::vector<uint32_t>& stack) const {
+        if (i + 1 >= linkStart.size()) { return; }
+        for (uint32_t k = linkStart[i]; k < linkStart[i + 1]; ++k) {
+            const Link& l = links[k];
+            const Body& o = bodies[l.other];
+            if (o.type == MotionType::Dynamic && !o.awake && linked(l)) { stack.push_back(l.other); }
+        }
+    }
+
     // A static or kinematic start wakes the dynamic bodies touching it, without spreading past them.
     void wakeBodies(const std::vector<uint32_t>& start) {
         std::vector<uint32_t> stack;
@@ -435,23 +524,10 @@ struct World::Impl {
         }
         if (stack.empty() && !anchors) { return; }
 
-        std::vector<std::vector<uint32_t>> adjacency(bodies.size());
-        for (const Contact& c : contacts) {
-            if (c.count == 0) { continue; }
-            adjacency[c.bodyA].push_back(c.bodyB);
-            adjacency[c.bodyB].push_back(c.bodyA);
-        }
-        for (const Joint& j : joints) {
-            if (!j.alive || j.bodyA == kWorldBody) { continue; }
-            adjacency[j.bodyA].push_back(j.bodyB);
-            adjacency[j.bodyB].push_back(j.bodyA);
-        }
+        if (!linksValid) { buildLinks(); }
         for (uint32_t i : start) {
             if (!bodies[i].alive || bodies[i].type == MotionType::Dynamic) { continue; }
-            for (uint32_t j : adjacency[i]) {
-                const Body& o = bodies[j];
-                if (o.type == MotionType::Dynamic && !o.awake) { stack.push_back(j); }
-            }
+            pushLinked(i, stack);
             pushOverlapping(i, stack);
         }
         while (!stack.empty()) {
@@ -462,10 +538,7 @@ struct World::Impl {
             b.awake = true;
             b.sleepTime = 0.0f;
             updateInverseMass(b);
-            for (uint32_t j : adjacency[i]) {
-                const Body& o = bodies[j];
-                if (o.type == MotionType::Dynamic && !o.awake) { stack.push_back(j); }
-            }
+            pushLinked(i, stack);
         }
     }
 
@@ -628,13 +701,17 @@ struct World::Impl {
 
         const size_t collided = next.size();
         for (const Contact& c : contacts) {
-            if (movingAwake(bodies[c.bodyA]) || movingAwake(bodies[c.bodyB])) { continue; }
+            const Body& a = bodies[c.bodyA];
+            const Body& b = bodies[c.bodyB];
+            if (c.removed || movingAwake(a) || movingAwake(b)) { continue; }
+            if (a.type != MotionType::Dynamic && b.type != MotionType::Dynamic) { continue; }
             next.push_back(c);
         }
         std::inplace_merge(next.begin(), next.begin() + (std::ptrdiff_t)collided, next.end(), [](const Contact& a, const Contact& b) {
             return a.key != b.key ? a.key < b.key : a.part < b.part;
         });
         contacts.swap(next);
+        linksValid = false;
         wakeBodies(toWake);
         profile.manifolds = (int)contacts.size();
         profile.narrowphase = millisecondsSince(narrowStart);
@@ -935,6 +1012,7 @@ struct World::Impl {
         profile.sweptPairs = (int)pairs.size();
 
         std::vector<float> fraction(bodies.size(), 1.0f);
+        std::vector<uint32_t> carrier(bodies.size(), UINT32_MAX);
         std::vector<uint32_t> group(bodies.size());
         for (uint32_t i = 0; i < group.size(); ++i) { group[i] = i; }
         auto find = [&](uint32_t x) {
@@ -987,7 +1065,10 @@ struct World::Impl {
             } else if (!sweep(convexOf(o), o.kind == ShapeKind::HalfSpace ? 0.0f : reach(o, bo), t)) {
                 continue;
             }
-            fraction[f.body] = std::fmin(fraction[f.body], t);
+            if (t < fraction[f.body]) {
+                fraction[f.body] = t;
+                carrier[f.body] = bo.type == MotionType::Kinematic ? o.body : UINT32_MAX;
+            }
             if (bodies[o.body].type == MotionType::Dynamic) {
                 const uint32_t ra = find(f.body), rb = find(o.body);
                 if (ra != rb) { group[std::max(ra, rb)] = std::min(ra, rb); }
@@ -997,13 +1078,23 @@ struct World::Impl {
         // Dynamic bodies that hit each other move back together, so none is left inside another.
         for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
             const uint32_t r = find(bi);
-            fraction[r] = std::fmin(fraction[r], fraction[bi]);
+            if (fraction[bi] < fraction[r]) {
+                fraction[r] = fraction[bi];
+                carrier[r] = carrier[bi];
+            }
         }
         for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
-            const float t = fraction[find(bi)];
+            const uint32_t r = find(bi);
+            const float t = fraction[r];
             Body& b = bodies[bi];
             if (t >= 1.0f || b.type != MotionType::Dynamic || !b.awake) { continue; }
             b.xf = sweeps[bi].at(t);
+            // A kinematic body keeps moving after the hit, so what hit it rides along to the end of the step.
+            if (carrier[r] != UINT32_MAX) {
+                const Transform k = sweeps[carrier[r]].at(t);
+                const Transform ride{ k.applyInverse(b.xf.p), normalize(k.q.conjugate() * b.xf.q) };
+                b.xf = bodies[carrier[r]].xf * ride;
+            }
             b.com = b.xf.apply(b.localCenter);
             updateInverseMass(b);
             place(bi);
@@ -1335,6 +1426,20 @@ void World::setGeometry(ShapeId id, const Geometry& geometry) {
     w.wakeBodies({ s->body });
 }
 
+void World::setLocalTransform(ShapeId id, const Vec3& position, const Quat& rotation) {
+    Impl& w = *impl_;
+    Shape* s = w.get(id);
+    if (!s) { return; }
+    w.untrack(id.index);
+    s->local = { position, normalize(rotation) };
+    w.track(id.index);
+    for (Contact& c : w.contacts) {
+        if (c.shapeA == id.index || c.shapeB == id.index) { c.reusable = false; }
+    }
+    w.updateMass(w.bodies[s->body]);
+    w.wakeBodies({ s->body });
+}
+
 void World::setFriction(ShapeId id, float friction) {
     if (Shape* s = impl_->get(id)) { s->friction = friction; }
 }
@@ -1433,6 +1538,7 @@ void World::setMotionType(BodyId id, MotionType type) {
         b->w = Vec3{};
     }
     if (type == MotionType::Dynamic) { b->awake = true; }
+    if (type != MotionType::Dynamic) { w.removeAnchoredContacts(id.index); }
     w.refitted.insert(w.refitted.end(), b->shapes.begin(), b->shapes.end());
     w.updateMass(*b);
     w.wakeBodies({ id.index });
@@ -1670,6 +1776,7 @@ JointId World::createJoint(const JointDesc& d) {
         }), w.contacts.end());
     }
     w.updateJoinedPairs();
+    w.linksValid = false;
     w.wakeJoint(j);
     return { i, j.generation };
 }
@@ -1746,7 +1853,7 @@ std::vector<ContactInfo> World::contacts(bool includeSpeculative) const {
     const Impl& w = *impl_;
     std::vector<ContactInfo> out;
     for (const Contact& c : w.contacts) {
-        if (!includeSpeculative && !c.touching()) { continue; }
+        if (c.removed || (!includeSpeculative && !c.touching())) { continue; }
         ContactInfo info;
         info.bodyA = w.bodyId(c.bodyA);
         info.bodyB = w.bodyId(c.bodyB);
@@ -1787,6 +1894,7 @@ bool World::castRay(const Vec3& origin, const Vec3& translation, RayHit& hit, ui
         float fraction;
         Vec3 normal;
         if (!rayShape(s, xf, origin, translation, best, fraction, normal)) { continue; }
+        if (found && fraction >= best) { continue; }
         best = fraction;
         found = true;
         hit.body = w.bodyId(s.body);
