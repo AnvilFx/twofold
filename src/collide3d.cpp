@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cfloat>
 #include <utility>
 
@@ -424,6 +425,23 @@ void collideSpheres(const Vec3& ca, float ra, const Vec3& cb, float rb, float ma
 
 // Rim points standing in for a cap.
 constexpr int kCapPoints = 24;
+
+struct CapCircle {
+    float cos[kCapPoints], sin[kCapPoints];
+
+    CapCircle() {
+        for (int k = 0; k < kCapPoints; ++k) {
+            const float t = 2.0f * 3.14159265358979f * (float)k / (float)kCapPoints;
+            cos[k] = std::cos(t);
+            sin[k] = std::sin(t);
+        }
+    }
+};
+
+const CapCircle& capCircle() {
+    static const CapCircle circle;
+    return circle;
+}
 // A polyhedron face takes part as a face when its normal is this close to the contact normal.
 constexpr float kFlatFace = 0.9998f;
 
@@ -463,6 +481,25 @@ float extentAlong(const Solid& s, const Vec3& d) {
     return most;
 }
 
+// The least and most a solid reaches along d.
+void rangeAlong(const Solid& s, const Vec3& d, float& least, float& most) {
+    if (s.cylinder) {
+        const float a = dot(s.axis, d);
+        const float c = dot(s.center, d);
+        const float h = s.halfHeight * std::fabs(a);
+        const float r = s.radius * std::sqrt(maxf(1.0f - a * a, 0.0f));
+        most = c + h + r;
+        least = -(-c + h + r);
+        return;
+    }
+    most = least = dot(s.poly.v[0], d);
+    for (int k = 1; k < s.poly.vertexCount; ++k) {
+        const float x = dot(s.poly.v[k], d);
+        most = maxf(most, x);
+        least = minf(least, x);
+    }
+}
+
 Vec3 supportPoint(const Solid& s, const Vec3& d) {
     if (s.cylinder) {
         const float a = dot(s.axis, d);
@@ -493,10 +530,8 @@ void featureAlong(const Solid& s, const Vec3& d, float band, std::vector<Vec3>& 
             const Vec3 u = 2.0f * s.radius * len > band ? radial / len : s.side;
             const Vec3 v = cross(normal, u);
             const Vec3 c = s.center + normal * s.halfHeight;
-            for (int k = 0; k < kCapPoints; ++k) {
-                const float t = 2.0f * 3.14159265358979f * (float)k / (float)kCapPoints;
-                out.push_back(c + (u * std::cos(t) + v * std::sin(t)) * s.radius);
-            }
+            const CapCircle& circle = capCircle();
+            for (int k = 0; k < kCapPoints; ++k) { out.push_back(c + (u * circle.cos[k] + v * circle.sin[k]) * s.radius); }
         } else {
             const Vec3 p = s.center + radial * (s.radius / len);
             out.push_back(p - s.axis * s.halfHeight);
@@ -541,22 +576,40 @@ void tryAxis(const Solid& a, const Solid& b, const Vec3& d, Separation& best) {
     }
 }
 
+// Tries d, then -d.
+void tryAxes(const Solid& a, const Solid& b, const Vec3& d, Separation& best) {
+    const float len = length(d);
+    if (len < 1e-6f) { return; }
+    const Vec3 n = d / len;
+    float leastA, mostA, leastB, mostB;
+    rangeAlong(a, n, leastA, mostA);
+    rangeAlong(b, n, leastB, mostB);
+    if (leastB - mostA > best.gap) {
+        best.normal = n;
+        best.gap = leastB - mostA;
+    }
+    if (leastA - mostB > best.gap) {
+        best.normal = -n;
+        best.gap = leastA - mostB;
+    }
+}
+
 // No direction separates the solids by more than they are apart, so the best direction along which a flat
-// or straight pair of features can touch is exact whenever such a pair touches.
-Separation featureAxes(const Solid& a, const Solid& b) {
+// or straight pair of features can touch is exact whenever such a pair touches. Stops once an axis separates
+// them by more than limit.
+Separation featureAxes(const Solid& a, const Solid& b, float limit) {
     Separation best;
-    for (int i = 0; !a.cylinder && i < a.poly.faceCount; ++i) { tryAxis(a, b, a.poly.n[i], best); }
-    for (int i = 0; !b.cylinder && i < b.poly.faceCount; ++i) { tryAxis(a, b, -b.poly.n[i], best); }
+    for (int i = 0; !a.cylinder && i < a.poly.faceCount && best.gap <= limit; ++i) { tryAxis(a, b, a.poly.n[i], best); }
+    for (int i = 0; !b.cylinder && i < b.poly.faceCount && best.gap <= limit; ++i) { tryAxis(a, b, -b.poly.n[i], best); }
     for (const Solid* c : { &a, &b }) {
         if (!c->cylinder) { continue; }
-        tryAxis(a, b, c->axis, best);
-        tryAxis(a, b, -c->axis, best);
+        tryAxes(a, b, c->axis, best);
     }
+    if (best.gap > limit) { return best; }
     if (a.cylinder && b.cylinder) {
         const Vec3 c = cross(a.axis, b.axis);
         if (length(c) > kParallelEdges) {
-            tryAxis(a, b, c, best);
-            tryAxis(a, b, -c, best);
+            tryAxes(a, b, c, best);
         } else {
             const Vec3 d = b.center - a.center;
             tryAxis(a, b, d - a.axis * dot(d, a.axis), best);
@@ -566,23 +619,24 @@ Separation featureAxes(const Solid& a, const Solid& b) {
     const Solid& cyl = a.cylinder ? a : b;
     const FramePoly& p = a.cylinder ? b.poly : a.poly;
     for (const Polyhedron::Edge& e : p.src->edges) {
+        if (best.gap > limit) { break; }
         const Vec3 edge = p.v[e.v1] - p.v[e.v0];
         Vec3 c = cross(edge, cyl.axis);
         if (length(c) <= kParallelEdges * e.length) {
             const Vec3 d = p.v[e.v0] - cyl.center;
             c = d - cyl.axis * dot(d, cyl.axis);
         }
-        tryAxis(a, b, c, best);
-        tryAxis(a, b, -c, best);
+        tryAxes(a, b, c, best);
     }
     return best;
 }
 
 // GJK directions between the shapes and between their cores, cylinders shrunk into a rounded core. Near
 // touching, the first is poorly placed and the second takes over.
-int distanceAxes(Convex ca, const Transform& xa, Convex cb, const Transform& xb, const Tolerances& tol, Vec3 n[2]) {
+int distanceAxes(Convex ca, const Transform& xa, Convex cb, const Transform& xb, const Vec3& start,
+                 const Tolerances& tol, Vec3 n[2]) {
     int count = 0;
-    const DistanceResult r = distance(ca, xa, cb, xb);
+    const DistanceResult r = distance(ca, xa, cb, xb, start);
     if (r.distance > 0.0f) { n[count++] = r.normal; }
     if (r.distance > tol.linearSlop) { return count; }
     float shrunk = 0.0f;
@@ -676,20 +730,36 @@ Vec3 closestOnTriangle(const Vec3 c[3], const Vec3& p, int& feature) {
     return c[0] + ab * (vb * denom) + ac * (vc * denom);
 }
 
-// Distance from the segment pq to the triangle.
-float segmentToTriangle(const Vec3 c[3], const Vec3& p, const Vec3& q) {
+// Distance from the segment pq to the triangle, with the closest point on each.
+float segmentToTriangle(const Vec3 c[3], const Vec3& p, const Vec3& q, Vec3& onSegment, Vec3& onTriangle) {
     const Vec3 n = cross(c[1] - c[0], c[2] - c[0]);
     const float hp = dot(n, p - c[0]), hq = dot(n, q - c[0]);
     int feature;
     if ((hp < 0.0f) != (hq < 0.0f)) {
-        closestOnTriangle(c, p + (q - p) * (hp / (hp - hq)), feature);
-        if (feature == 6) { return 0.0f; }
+        const Vec3 x = p + (q - p) * (hp / (hp - hq));
+        closestOnTriangle(c, x, feature);
+        if (feature == 6) {
+            onSegment = onTriangle = x;
+            return 0.0f;
+        }
     }
-    float best = minf(length(p - closestOnTriangle(c, p, feature)), length(q - closestOnTriangle(c, q, feature)));
+    onSegment = p;
+    onTriangle = closestOnTriangle(c, p, feature);
+    float best = length(p - onTriangle);
+    const Vec3 fromQ = closestOnTriangle(c, q, feature);
+    if (length(q - fromQ) < best) {
+        best = length(q - fromQ);
+        onSegment = q;
+        onTriangle = fromQ;
+    }
     for (int k = 0; k < 3; ++k) {
         Vec3 s, t;
         closestOnSegments(p, q, c[k], c[(k + 1) % 3], s, t);
-        best = minf(best, length(s - t));
+        if (length(s - t) < best) {
+            best = length(s - t);
+            onSegment = s;
+            onTriangle = t;
+        }
     }
     return best;
 }
@@ -699,30 +769,55 @@ float segmentToTriangle(const Vec3 c[3], const Vec3& p, const Vec3& q) {
 // missing, so the best axis climbs toward the direction a curved pair touches along.
 bool separate(const Solid& a, const Solid& b, const Convex& ca, const Transform& xa, const Convex& cb,
               const Transform& xb, const Quat& toFrame, float margin, const Tolerances& tol, Separation& best) {
-    best = featureAxes(a, b);
+    best = featureAxes(a, b, margin);
     if (best.gap > margin) { return false; }
     float apart = FLT_MAX;
+    Vec3 between;
     if (!a.cylinder && a.poly.vertexCount == 3) {
         // A cylinder lies within the capsule around its axis. GJK would only confirm a triangle out of its reach.
+        // Where the capsule is closest between the caps, its side is the cylinder's, and the direction between
+        // the closest points separates the solids by exactly their distance.
         if (b.cylinder) {
             const Vec3 h = b.axis * b.halfHeight;
-            const float reach = segmentToTriangle(a.poly.v, b.center - h, b.center + h) - b.radius;
-            if (reach > margin + 0.1f * tol.linearSlop) { return false; }
+            Vec3 onAxis, onTriangle;
+            const float reach = segmentToTriangle(a.poly.v, b.center - h, b.center + h, onAxis, onTriangle) - b.radius;
+            if (reach > margin + 0.1f * tol.linearSlop) {
+                best.gap = reach;
+                return false;
+            }
+            if (reach > 0.0f && std::fabs(dot(onAxis - b.center, b.axis)) < 0.999f * b.halfHeight) {
+                Separation side;
+                tryAxis(a, b, onAxis - onTriangle, side);
+                if (side.gap > best.gap + 0.1f * tol.linearSlop) { best = side; }
+                apart = reach;
+            }
         }
         // No axis separates the solids by more than two of their points are apart. Once a pair found by
-        // projecting back and forth comes as close as the best axis, a GJK direction can't win.
+        // projecting back and forth comes as close as the best axis, a GJK direction can't win. Once the
+        // direction between a pair well apart separates the solids by nearly as much, it is as good as GJK's.
+        // Otherwise GJK starts from that direction.
         Vec3 p = supportPoint(b, -best.normal);
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 16 && apart > best.gap + 0.1f * tol.linearSlop; ++i) {
             int feature;
             const Vec3 q = closestOnTriangle(a.poly.v, p, feature);
             apart = length(p - q);
             if (!b.cylinder || apart <= best.gap + 0.1f * tol.linearSlop) { break; }
+            between = p - q;
+            if (i >= 2 && apart > tol.linearSlop) {
+                Separation pair;
+                tryAxis(a, b, between, pair);
+                if (pair.gap >= apart - 0.01f * tol.linearSlop) {
+                    if (pair.gap > best.gap + 0.1f * tol.linearSlop) { best = pair; }
+                    apart = best.gap;
+                    break;
+                }
+            }
             p = closestOnCylinder(b, q);
         }
     }
     if (apart > best.gap + 0.1f * tol.linearSlop) {
         Vec3 n[2];
-        const int count = distanceAxes(ca, xa, cb, xb, tol, n);
+        const int count = distanceAxes(ca, xa, cb, xb, toFrame.rotate(between), tol, n);
         Separation curved;
         for (int i = 0; i < count; ++i) { tryAxis(a, b, toFrame.unrotate(n[i]), curved); }
         if (curved.gap > best.gap + 0.1f * tol.linearSlop) { best = curved; }
@@ -734,8 +829,7 @@ bool separate(const Solid& a, const Solid& b, const Convex& ca, const Transform&
         for (const Solid* s : { &a, &b }) {
             if (!s->cylinder) { continue; }
             Separation cap, side;
-            tryAxis(a, b, s->axis, cap);
-            tryAxis(a, b, -s->axis, cap);
+            tryAxes(a, b, s->axis, cap);
             tryAxis(a, b, d - s->axis * dot(d, s->axis), side);
             for (const Separation& start : { cap, side }) {
                 if (start.gap == -FLT_MAX) { continue; }
@@ -1068,6 +1162,18 @@ bool keepsNormal(uint8_t edges, int feature, int side, const Vec3& normal, const
     return ownNormal(edges, feature, side) || ownNormal(edges, feature, dot(normal, n) >= 0.0f ? 0 : 1);
 }
 
+bool outOfReach(const TriangleBounds* bounds, int t, float margin) {
+    if (!bounds || bounds->knownCount == 0) { return false; }
+    const TriangleBound* end = bounds->known + bounds->knownCount;
+    const TriangleBound* it = std::lower_bound(bounds->known, end, t,
+                                               [](const TriangleBound& b, int triangle) { return b.triangle < triangle; });
+    return it != end && it->triangle == t && it->distance - bounds->moved > margin;
+}
+
+void ruleOut(TriangleBounds* bounds, int t, float distance) {
+    if (bounds && bounds->found) { bounds->found->push_back({ t, distance }); }
+}
+
 struct MeshBuffers {
     TriangleFrame tri;
     FrameStore frame;
@@ -1164,7 +1270,7 @@ void reduceManifold(std::vector<ManifoldPoint>& pts, const Vec3& normal, float b
 }
 
 void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, const Transform& xo, float margin,
-                 const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out) {
+                 const Tolerances& tol, const Motion& motion, std::vector<Manifold>& out, TriangleBounds* bounds) {
     out.clear();
     const TriangleMesh::Data* d = meshOf(mesh);
     if (!d || other.kind == ShapeKind::HalfSpace || other.kind == ShapeKind::Mesh) { return; }
@@ -1178,6 +1284,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
         const float r = other.radius;
         const Vec3 reach{ r + margin, r + margin, r + margin };
         d->query(center - reach, center + reach, [&](int t) {
+            if (outOfReach(bounds, t, margin)) { return; }
             Vec3 c[3];
             d->corners(t, c);
             const Vec3 n = d->normals[t];
@@ -1199,7 +1306,10 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
                 sep = dist - r;
                 surface = q;
             }
-            if (sep > margin) { return; }
+            if (sep > margin) {
+                ruleOut(bounds, t, sep);
+                return;
+            }
             Manifold m;
             m.normal = xm.q.rotate(normal);
             const Vec3 w = xm.apply((surface + center - normal * r) * 0.5f);
@@ -1212,6 +1322,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
         const Vec3 reach = cylinderReach(b.axis, b.radius, b.halfHeight) + Vec3{ margin, margin, margin };
         const Convex convexB = convexOf(other);
         d->query(b.center - reach, b.center + reach, [&](int t) {
+            if (outOfReach(bounds, t, margin)) { return; }
             Vec3 c[3];
             d->corners(t, c);
             const Vec3 n = d->normals[t];
@@ -1220,7 +1331,10 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             a.poly = ownFrame(buf.tri.poly);
             const Convex triangle{ buf.tri.poly.vertices.data(), 3, 0.0f, false };
             Separation best;
-            if (!separate(a, b, triangle, xm, convexB, xo, xm.q, margin, tol, best)) { return; }
+            if (!separate(a, b, triangle, xm, convexB, xo, xm.q, margin, tol, best)) {
+                ruleOut(bounds, t, best.gap);
+                return;
+            }
             Manifold m;
             solidContact(a, b, best.normal, best.gap, xm, margin, tol.linearSlop, motion, buf.round, m);
             if (m.count == 0) { return; }
@@ -1251,6 +1365,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
         const Convex convexB = convexOf(other);
         const Vec3 grow{ margin, margin, margin };
         d->query(b.lo - grow, b.hi + grow, [&](int t) {
+            if (outOfReach(bounds, t, margin)) { return; }
             Vec3 c[3];
             d->corners(t, c);
             const Vec3 n = d->normals[t];
@@ -1258,15 +1373,35 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             const FramePoly a = ownFrame(buf.tri.poly);
 
             const FaceQuery fa = queryFaces(a, b, margin);
-            if (fa.separation > margin) { return; }
+            if (fa.separation > margin) {
+                ruleOut(bounds, t, fa.separation);
+                return;
+            }
             const FaceQuery fb = queryFaces(b, a, margin);
-            if (fb.separation > margin) { return; }
+            if (fb.separation > margin) {
+                ruleOut(bounds, t, fb.separation);
+                return;
+            }
             const float reach = maxf(margin, -maxf(fa.separation, fb.separation));
             const EdgeQuery eq = queryTriangleEdges(a, b, reach, buf.near);
-            if (eq.separation > margin) { return; }
+            if (eq.separation > margin) {
+                ruleOut(bounds, t, eq.separation);
+                return;
+            }
+            // Edges out of reach were skipped, so GJK confirms the shapes come within margin, unless the vertex of b
+            // deepest toward the triangle already does.
             if (eq.pruned) {
-                const Convex triangle{ buf.tri.poly.vertices.data(), 3, 0.0f, false };
-                if (distance(triangle, xm, convexB, xo).distance > margin) { return; }
+                const Vec3 toward = a.n[fa.index];
+                int deep = 0;
+                for (int k = 1; k < b.vertexCount; ++k) {
+                    if (dot(b.v[k], toward) < dot(b.v[deep], toward)) { deep = k; }
+                }
+                int feature;
+                const Vec3 q = closestOnTriangle(c, b.v[deep], feature);
+                if (lengthSquared(b.v[deep] - q) > margin * margin) {
+                    const Convex triangle{ buf.tri.poly.vertices.data(), 3, 0.0f, false };
+                    if (distance(triangle, xm, convexB, xo).distance > margin) { return; }
+                }
             }
 
             Manifold m;

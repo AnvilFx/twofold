@@ -202,7 +202,11 @@ See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
   beats every feature axis, which happens where a rim meets an edge or another rim. Against
   a mesh triangle GJK is skipped where it can't change the result: when the triangle is out
   of reach of the capsule around the cylinder's axis, or when a pair of points found by
-  projecting back and forth between the two is already as close as the best axis. Each
+  projecting back and forth between the two is already as close as the best axis. Where
+  the capsule is closest to the triangle between the caps, the direction between those
+  closest points is exact and joins the feature axes. Where the projected pair is more than
+  the slop apart and the direction between it separates the shapes to within 0.05 mm of
+  the pair's distance, that direction stands in for GJK. Otherwise GJK starts from it. Each
   side then offers a feature along the normal: a cap as 24 rim points, the line of the
   side, a polyhedron face, or its one or two deepest vertices. A face clips the other
   feature, and two lines touch along their overlap, or at their closest points with the
@@ -244,8 +248,9 @@ keeps the corners of the edge that hits first, pivots on that edge and flips up.
 A triangle is a polyhedron with two faces, front and back, so the face queries, face
 contacts and edge contacts above apply to it unchanged. Its edge query is its own: the arc
 of a triangle edge on the Gauss map is the half circle from the front normal through the
-edge's outward direction to the back normal. A sphere takes the closest point on the
-triangle.
+edge's outward direction to the back normal. When that query skips edges, the GJK check is
+left out if the other shape's vertex deepest toward the triangle is already within the
+margin of it. A sphere takes the closest point on the triangle.
 
 When a contact's normal is off the triangle's normal, the triangle feature it touches is
 the one reaching farthest along that normal, an edge when its far corner is within slop.
@@ -367,7 +372,9 @@ the bodies' current lever arms, its stored separation absorbs the distance alrea
 and `dp`, `dq` and the base orientation of every body reset. New points then take impulses
 from old points the same way as after the narrowphase, and the restitution data of the
 nearest old point. A mesh pair is collided once, and each of its contacts takes the new
-group whose normal is closest to its own.
+group whose normal is closest to its own. A fast mesh pair keeps the triangles it ruled out
+at the start of the step, with their distances. Collided again, it skips each one while
+that distance, less how far the two bodies have moved since, stays past the margin.
 
 See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md) and
 [decision 24](decisions/0024-fast-solid-pairs-collide-every-substep.md).

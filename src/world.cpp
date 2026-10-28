@@ -144,6 +144,14 @@ struct World::Impl {
     // Kept between steps so the rebuilt contact list doesn't allocate.
     std::vector<Contact> nextContacts;
     std::vector<PointAxes> axes;
+    // Mesh triangles a fast pair ruled out at the start of the step, so collisions within the step can skip
+    // them. Each pair's run is sorted by triangle, and the runs are in key order.
+    struct BoundRun {
+        uint64_t key;
+        uint32_t begin, end;
+    };
+    std::vector<TriangleBound> triangleBounds;
+    std::vector<BoundRun> boundRuns;
     // Every shape but half-spaces, whose bounds are infinite and which are kept apart in planes.
     BoundsTree tree;
     std::vector<uint32_t> planes;
@@ -387,12 +395,20 @@ struct World::Impl {
 
     float bodyExtent(const Body& b) const { return b.extent; }
 
+    // How far any point of the body has moved since the step started.
+    float movedThisStep(const Body& b) const {
+        const Quat turn = b.q0.conjugate() * b.xf.q;
+        const float s = minf(std::sqrt(turn.x * turn.x + turn.y * turn.y + turn.z * turn.z), 1.0f);
+        return length(b.com - b.com0) + 2.0f * std::asin(s) * bodyExtent(b);
+    }
+
     float relativeTravel(const Body& a, const Body& b, float dt) const {
         return (length(b.v - a.v) + length(a.w) * bodyExtent(a) + length(b.w) * bodyExtent(b)) * dt;
     }
 
     // One manifold, or one for each way the triangles of a mesh face.
-    void collidePair(const Shape& sa, const Shape& sb, float dt, std::vector<Manifold>& out) const {
+    void collidePair(const Shape& sa, const Shape& sb, float dt, std::vector<Manifold>& out,
+                     TriangleBounds* bounds = nullptr) const {
         const Body& ba = bodies[sa.body];
         const Body& bb = bodies[sb.body];
         const Transform xa = ba.xf * sa.local;
@@ -401,11 +417,11 @@ struct World::Impl {
         const float margin = tol.speculative + travel;
         const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt, travel > tol.speculative };
         if (sa.kind == ShapeKind::Mesh) {
-            collideMesh(sa, xa, sb, xb, margin, tol, mo, out);
+            collideMesh(sa, xa, sb, xb, margin, tol, mo, out, bounds);
             return;
         }
         if (sb.kind == ShapeKind::Mesh) {
-            collideMesh(sb, xb, sa, xa, margin, tol, mo.swapped(), out);
+            collideMesh(sb, xb, sa, xa, margin, tol, mo.swapped(), out, bounds);
             for (Manifold& m : out) { m.normal = -m.normal; }
             return;
         }
@@ -711,6 +727,8 @@ struct World::Impl {
 
         std::vector<Contact>& next = nextContacts;
         next.clear();
+        triangleBounds.clear();
+        boundRuns.clear();
         std::vector<uint32_t> toWake;
         std::vector<Manifold> found;
         const float matchSq = tol.speculative * tol.speculative;
@@ -736,7 +754,18 @@ struct World::Impl {
                     measureAgain(ba, bb, next.back());
                 }
             } else {
-                collidePair(sa, sb, dt, found);
+                // A fast pair is collided again within the step.
+                const bool record = (sa.kind == ShapeKind::Mesh || sb.kind == ShapeKind::Mesh) &&
+                                    relativeTravel(ba, bb, dt) > tol.speculative;
+                const uint32_t begin = (uint32_t)triangleBounds.size();
+                TriangleBounds bounds;
+                bounds.found = &triangleBounds;
+                collidePair(sa, sb, dt, found, record ? &bounds : nullptr);
+                if (triangleBounds.size() > begin) {
+                    std::sort(triangleBounds.begin() + begin, triangleBounds.end(),
+                              [](const TriangleBound& x, const TriangleBound& y) { return x.triangle < y.triangle; });
+                    boundRuns.push_back({ key, begin, (uint32_t)triangleBounds.size() });
+                }
                 if (found.empty()) { continue; }
             }
             for (size_t mi = 0; !keep && mi < found.size(); ++mi) {
@@ -900,7 +929,15 @@ struct World::Impl {
             // The contacts of a pair sit next to each other. The pair is collided once, and each contact takes
             // the new manifold whose normal is closest to its own.
             if (fi == 0 || contacts[fast[fi - 1]].key != c.key) {
-                collidePair(shapes[c.shapeA], shapes[c.shapeB], remaining, found);
+                auto run = std::lower_bound(boundRuns.begin(), boundRuns.end(), c.key,
+                                            [](const BoundRun& r, uint64_t key) { return r.key < key; });
+                TriangleBounds bounds;
+                if (run != boundRuns.end() && run->key == c.key) {
+                    bounds.known = triangleBounds.data() + run->begin;
+                    bounds.knownCount = (int)(run->end - run->begin);
+                    bounds.moved = movedThisStep(a) + movedThisStep(b);
+                }
+                collidePair(shapes[c.shapeA], shapes[c.shapeB], remaining, found, &bounds);
                 taken.assign(found.size(), 0);
             }
             int pick = -1;
