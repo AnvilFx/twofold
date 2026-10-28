@@ -38,6 +38,12 @@ public:
         traverse([&](const Node& n) { return segmentHits(n, origin, d); }, visit);
     }
 
+    // Calls visit(item) for every leaf whose box, grown by extent on every side, the segment passes through.
+    template <class Visit>
+    void boxcast(const Vec3& origin, const Vec3& d, const Vec3& extent, Visit&& visit) const {
+        traverse([&](const Node& n) { return segmentHits({ n.lo - extent, n.hi + extent }, origin, d); }, visit);
+    }
+
 private:
     struct Node {
         Vec3 lo, hi;

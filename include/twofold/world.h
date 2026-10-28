@@ -261,6 +261,19 @@ struct RayHit {
     float fraction = 1.0f;
 };
 
+struct CastHit {
+    BodyId body;
+    ShapeId shape;
+    // Where the shapes touch, and the normal of the hit shape there, facing the cast geometry.
+    Vec3 point;
+    Vec3 normal;
+    // How far the geometry moved before touching, as a fraction of the translation.
+    float fraction = 1.0f;
+    // The geometry touched the shape where it started. The fraction is zero, the point is the deepest point
+    // of the overlap and the normal pushes the geometry out, or is zero when the overlap gives no direction.
+    bool initialOverlap = false;
+};
+
 // Timings of the last step in milliseconds, and what it processed.
 struct StepProfile {
     float total = 0.0f;
@@ -386,6 +399,27 @@ public:
     // Closest shape hit by the segment from origin to origin + translation, ignoring shapes whose
     // category does not overlap mask and shapes that contain the origin.
     bool castRay(const Vec3& origin, const Vec3& translation, RayHit& hit, uint32_t mask = 0xffffffffu) const;
+    // Every shape castRay could hit, one hit each, nearest first and in shape index order at equal fractions.
+    // Replaces the contents of hits.
+    bool castRayAll(const Vec3& origin, const Vec3& translation, std::vector<RayHit>& hits,
+                    uint32_t mask = 0xffffffffu) const;
+
+    // The geometry queries below take a sphere, box, cylinder, prism or hull at a pose and find nothing for a
+    // half-space or mesh. Shapes within 0.01 mm of each other touch. A mesh has no inside, only its triangles.
+    // Found shapes replace the contents of found, in shape index order. Shapes whose category does not overlap
+    // mask are skipped.
+
+    // Closest shape the geometry touches moving from pose to pose.p + translation without turning. A shape it
+    // touches at the start is a hit at fraction zero with initialOverlap set. The lowest shape index wins a tie.
+    bool castGeometry(const Geometry& geometry, const Transform& pose, const Vec3& translation, CastHit& hit,
+                      uint32_t mask = 0xffffffffu) const;
+    // Shapes the geometry touches at pose.
+    bool overlapGeometry(const Geometry& geometry, const Transform& pose, std::vector<ShapeId>& found,
+                         uint32_t mask = 0xffffffffu) const;
+    // Shapes whose bounds overlap the box. A half-space counts when the box reaches into it.
+    bool overlapAabb(const Aabb& box, std::vector<ShapeId>& found, uint32_t mask = 0xffffffffu) const;
+    // Shapes that contain the point, as overlapGeometry finds them for a sphere of radius zero.
+    bool overlapPoint(const Vec3& point, std::vector<ShapeId>& found, uint32_t mask = 0xffffffffu) const;
 
 private:
     struct Impl;

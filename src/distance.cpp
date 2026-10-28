@@ -293,4 +293,6 @@ Impact timeOfImpact(const Convex& a, const Transform& localA, const Sweep& sweep
     return Impact::Hit;
 }
 
+Vec3 convexSupport(const Convex& c, const Transform& xf, const Vec3& d) { return support(c, xf, d); }
+
 }

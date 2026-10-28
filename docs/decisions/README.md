@@ -28,3 +28,4 @@ replaces the old one instead of editing it.
 22. [Rolling resistance follows the spin](0022-rolling-resistance-follows-the-spin.md)
 23. [Half-spaces are half-planes on the planar path](0023-half-spaces-are-half-planes-on-the-planar-path.md)
 24. [Fast solid pairs collide every substep](0024-fast-solid-pairs-collide-every-substep.md)
+25. [Queries share one touch test](0025-queries-share-one-touch-test.md)

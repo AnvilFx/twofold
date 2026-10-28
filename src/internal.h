@@ -306,6 +306,24 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
 void reduceManifold(std::vector<ManifoldPoint>& points, const Vec3& normal, float band, Manifold& m, float tie = 0.0f,
                     bool fast = false);
 
+// Whether origin + t * d for some t in [0, maxFraction] lies in the box lo, hi.
+bool segmentHitsBox(const Vec3& lo, const Vec3& hi, const Vec3& origin, const Vec3& d, float maxFraction);
+
+// Whether the point is within tolerance of the shape. A mesh only holds points near its triangles.
+bool shapeContains(const Shape& shape, const Transform& xf, const Vec3& point, float tolerance);
+
+// Whether the convex shape q at xq comes within tolerance of the shape.
+bool shapesOverlap(const Shape& shape, const Transform& xf, const Shape& q, const Transform& xq, float tolerance);
+
+// The point of the core of c farthest along d. A half-space has none.
+Vec3 convexSupport(const Convex& c, const Transform& xf, const Vec3& d);
+
+// Sweeps the convex shape q from xq along d without turning, as far as fraction, and leaves the fraction where
+// it first comes within touch of the shape there. Point and normal are on the shape, the normal facing q. A start
+// within touch is Touching, with the deepest point of the overlap and the normal that pushes q out.
+Impact castShape(const Shape& shape, const Transform& xf, const Shape& q, const Transform& xq, const Vec3& d,
+                 float touch, const Tolerances& tol, float& fraction, Vec3& point, Vec3& normal);
+
 struct ContactPoint {
     // Where the point touches each shape, in its body's frame.
     Vec3 surfaceA, surfaceB;

@@ -3,6 +3,28 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-28 18:39
+
+Added overlap queries for points, boxes and convex geometry, shape casts, and a ray cast
+that returns every hit. All of them take a mask, cull with the bounds tree and return
+shapes in index order.
+
+The first version of the casts used `timeOfImpact`. Against cylinder caps it stopped up to
+4.4 mm short, because it accepts a hit once the gap along the GJK normal is under its
+target, and that normal tilts on a cap. Changing it would change stepping, so the casts
+have their own advancement on the plain GJK distance, bisecting back when a step lands
+inside.
+
+The random test that checks casts against overlap queries still failed after that. GJK on
+a cylinder sometimes runs out of iterations and stops a little above the distance, by a
+different amount depending on which shape goes first. The cast and the overlap test now
+pass the query geometry first, and near touch with a cylinder both orders run and the
+smaller distance wins. Hit normals across a gap of a few micrometers were off by up to 7
+degrees on cylinder rims, so the normal now comes from the narrowphase half a millimeter
+before the hit.
+
+Scene hashes are unchanged.
+
 ## 2026-10-28 04:28
 
 Won back most of what colliding every substep cost, with results bit for bit the same.

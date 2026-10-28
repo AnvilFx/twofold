@@ -35,12 +35,13 @@ is tested by AnvilFx before it ships.
 - Sleeping islands, and bodies created asleep until touched
 - Point, fixed, hinge, slider and distance joints, with limits, motors and springs
 - Collision filtering by category and mask
-- Ray casts against every shape type
+- Ray casts against every shape type, for the closest hit or every hit
+- Shape casts and overlap queries for points, boxes and convex geometry, against every
+  shape type
 - Deterministic single-threaded stepping, and world copies that step identically
 - Per-step timings and counts, contact details and sleep islands for debugging tools
 
-Not yet implemented: dynamic meshes, shape casts and overlap queries, and contact
-callbacks.
+Not yet implemented: dynamic meshes and contact callbacks.
 
 ## Building
 
@@ -178,6 +179,25 @@ JointId id = world.createJoint(door);
 
 Joined bodies don't collide with each other unless `collideConnected` is set. Destroying
 a body destroys its joints.
+
+## Queries
+
+Queries never change the world. Each takes a category mask, and results come in a fixed
+order, so the same world gives the same answer.
+
+```cpp
+std::vector<ShapeId> found;
+world.overlapGeometry(Sphere{ 0.5f }, { { 0, 1, 0 } }, found);
+
+CastHit hit;
+if (world.castGeometry(Box{ { 0.5f, 0.5f, 0.5f } }, { { 0, 5, 0 } }, { 0, -10, 0 }, hit)) {
+    Vec3 rest = Vec3{ 0, 5, 0 } + Vec3{ 0, -10, 0 } * hit.fraction;
+}
+```
+
+A cast that starts inside a shape reports it at fraction 0 with `initialOverlap` set.
+Queries take spheres, boxes, cylinders, prisms and hulls. A mesh has no inside, so only
+its triangles count.
 
 ## Units
 
