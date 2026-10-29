@@ -3,6 +3,11 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-29 04:00
+
+The README now gives examples of what AnvilFx directs: the 2D path, the bounding volume
+hierarchy and the substepped soft contact solver.
+
 ## 2026-10-29 02:43
 
 Cutouts is layers only, and it took 0.44 ms a step, about three times Jolt with its bodies
