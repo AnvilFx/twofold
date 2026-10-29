@@ -3,6 +3,10 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-29 19:40
+
+The README now says which platforms AnvilFx tests by hand and which only CI checks.
+
 ## 2026-10-29 16:12
 
 CI failed on macOS: a degenerate prism in the drop test was still in the air after two

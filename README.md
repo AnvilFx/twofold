@@ -17,6 +17,7 @@ broadphase, and the substepped soft contact solver.
 
 Every claim Claude makes about a change, such as that it works or that it is faster,
 is tested by AnvilFx before it ships.
+AnvilFx tests on Windows. Linux and macOS builds are checked by CI.
 
 ## Features
 
