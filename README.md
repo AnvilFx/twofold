@@ -40,7 +40,8 @@ Not yet implemented: dynamic meshes.
 ## Building
 
 Requires CMake 3.21 and a C++17 compiler. Builds with MSVC on Windows, GCC and Clang on
-Linux, and Apple Clang on macOS.
+Linux, and Apple Clang on macOS. Tested on Windows. Linux and macOS builds are checked
+by CI.
 
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
