@@ -9,7 +9,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
   like any two bodies, and two flat layers in the same plane behave like a 2D engine.
 - Deterministic. The same calls in the same order give bit-identical results, and a copied
   world steps exactly like the original.
-- Small and readable. No dependencies outside the standard library, no threads, no SIMD.
+- Small and readable. No dependencies outside the standard library, and no threads.
   Speed matters, but not at the cost of being able to follow a step from start to end.
 - An API that does not assume a particular host. Plain value types in, handles out.
 

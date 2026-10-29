@@ -266,6 +266,10 @@ sleeping bodies, but not other sensors or the shapes on its own body.
 Twofold works in any length unit. Set `WorldSettings::lengthUnit` to the number of
 world units per meter so that tolerances and speed limits scale with the scene.
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
