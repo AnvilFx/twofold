@@ -11,7 +11,9 @@ plane, and contacts never push them apart along the plane normal.
 
 The code, tests and documentation are written by Claude, Anthropic's AI model. AnvilFx
 does not write code. AnvilFx directs the approaches and techniques the engine uses and
-makes sure they are modern and fast, rather than leaving those choices to Claude.
+makes sure they are modern and fast, rather than leaving those choices to Claude. For
+example, AnvilFx set how the 2D path works, the bounding volume hierarchy in the
+broadphase, and the substepped soft contact solver.
 
 Every claim Claude makes about a change, such as that it works or that it is faster,
 is tested by AnvilFx before it ships.
