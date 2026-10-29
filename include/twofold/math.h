@@ -33,8 +33,9 @@ struct Vec3 {
     Vec3() = default;
     constexpr Vec3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
 
-    float operator[](int i) const { return (&x)[i]; }
-    float& operator[](int i) { return (&x)[i]; }
+    // (&x)[i] would index past x, which is undefined, and Clang's optimizer breaks it.
+    float operator[](int i) const { return i == 0 ? x : i == 1 ? y : z; }
+    float& operator[](int i) { return i == 0 ? x : i == 1 ? y : z; }
 
     Vec3 operator+(const Vec3& b) const { return { x + b.x, y + b.y, z + b.z }; }
     Vec3 operator-(const Vec3& b) const { return { x - b.x, y - b.y, z - b.z }; }
