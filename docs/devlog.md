@@ -3,6 +3,63 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-29 02:43
+
+Cutouts is layers only, and it took 0.44 ms a step, about three times Jolt with its bodies
+locked to the plane. That was the 3D engine with axes locked, which is not the point. Layer
+pairs now collide and solve in 2D, and the bounds tree holds bodies instead of shapes.
+Mixed pairs, a layer against a free body, are untouched. See
+[decision 29](decisions/0029-planar-pairs-are-solved-in-2d.md) and
+[decision 30](decisions/0030-bounds-tree-leaves-are-bodies.md).
+
+- Profiles are made once per shape in its body's frame and kept. Each body is placed in the
+  plane once per round of collisions, so a pair costs one turn and one shift before the
+  polygon test. A box test drops pairs out of reach first, and the separation loop stops
+  once an edge separates them.
+- Contacts of layers in one plane solve with scalar arms and an inverse inertia about the
+  normal. Contacts holding nothing skip warm starting and their friction rows.
+- A planar body no longer rebuilds its world inertia every substep.
+- One leaf per body. A cutout of several pieces kept a pair for every two pieces whose
+  leaves met. Bodies of more than 64 shapes keep a tree of their own, or one static body of
+  9,800 boxes went from 0.19 to 0.35 ms a step. With it, that is back to 0.18.
+- Smaller: box and prism bounds from their outline, the planar inner extent kept per
+  shape, step lists kept between steps, and min and max that select instead of branching.
+
+Pinned minimum over 8 seeds, ms a step:
+
+| Scene | Before | After |
+| --- | --- | --- |
+| Cutouts | 0.442 | 0.125 |
+| Flat layers | 0.067 | 0.044 |
+| Rain | 0.606 | 0.582 |
+| Sweeper | 0.319 | 0.297 |
+| Hulls | 0.432 | 0.415 |
+| Meshes | 1.47 | 1.40 |
+| Joints | 0.192 | 0.184 |
+
+Tower, Pyramid, Dominoes, Slopes and Sleeping are the same. In the Jolt harness Cutouts is
+now 0.13 ms a frame to Jolt's 0.145, with a worst overlap of 17 mm to Jolt's 141.
+
+Only Flat layers, Cutouts, Joints and Meshes change. The pure 3D scenes give the same
+results bit for bit, with fewer candidates tested. Against 2771959:
+
+- Cutouts, 48 sets: frame mean 4.333 to 4.321 mm, frames past 10 mm 14051 to 13968, past
+  20 mm 415 to 390, past 50 mm 39 to 18, contact overlap 0.2690 to 0.2694.
+- Flat layers, 24 sets: frame mean 2.533 to 2.522, past 10 mm 10233 to 10189, past 20 mm
+  1585 to 1619, none past 50 mm, contact overlap 0.3307 to 0.3292.
+- Joints, 12 sets: the same.
+- Meshes, 48 sets: frame mean 4.018 to 3.991, past 10 mm 113657 to 110258, past 20 mm
+  12770 to 12890, past 50 mm 300 to 297, contact overlap 0.1993 to 0.1987.
+
+Meshes only changes by a different path through chaos, and single sets swing by 480 frames
+past 20 mm either way. Its worst set has two cylinders 20 mm into each other for a while.
+Their kept contact reads no overlap while a fresh collision finds 20 mm. That is the
+contact reuse in 3D, reached by a different trajectory, not the 2D work.
+
+Dropping speculative points that weren't closing looked like a cheap win and wasn't. Over
+twelve Cutouts sets frames past 20 mm went from 107 to 649 and past 50 mm from 1 to 78, and
+a test of a near miss failed.
+
 ## 2026-10-29 00:50
 
 Meshes was the slowest bench scene and the furthest behind Jolt, about six times its time.

@@ -1193,3 +1193,48 @@ TEST(fast_thin_plate_lands_without_rebound) {
         }
     }
 }
+
+TEST(body_with_many_shapes_finds_the_one_it_touches) {
+    World w;
+    BodyDesc fd;
+    fd.type = MotionType::Static;
+    const BodyId floor = w.createBody(fd);
+    std::vector<ShapeId> tiles;
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 10; ++j) {
+            ShapeDesc sd;
+            sd.geometry = Box{ { 0.5f, 0.5f, 0.5f } };
+            sd.position = { 2.0f * i, 0, 2.0f * j };
+            sd.category = 2;
+            tiles.push_back(w.addShape(floor, sd));
+        }
+    }
+    const ShapeId under = tiles[45];
+    const BodyId b = addBox(w, { 8, 2, 10 }, { 0.3f, 0.3f, 0.3f });
+    run(w, 3.0f);
+    CHECK(!w.isAwake(b));
+    CHECK_NEAR(w.position(b).y, 0.8f, 0.01f);
+
+    RayHit hit;
+    std::vector<ShapeId> found;
+    CHECK(w.castRay({ 8, 5, 10 }, { 0, -10, 0 }, hit, 2) && hit.shape == under);
+    CHECK(w.overlapPoint({ 8, 0.4f, 10 }, found) && found.size() == 1 && found[0] == under);
+    CHECK(!w.castRay({ 9, 5, 10 }, { 0, -10, 0 }, hit, 2));
+
+    w.setLocalTransform(under, { 8, -1, 10 }, {});
+    CHECK(w.isAwake(b));
+    run(w, 2.0f);
+    CHECK_NEAR(w.position(b).y, -0.2f, 0.01f);
+    CHECK(deepestContact(w) < 0.01f);
+    CHECK(w.castRay({ 8, -0.3f, 10 }, { 0, -10, 0 }, hit, 2) && hit.shape == under);
+
+    w.removeShape(tiles[0]);
+    CHECK(!w.overlapPoint({ 0, 0, 0 }, found));
+    ShapeDesc sd;
+    sd.geometry = Sphere{ 0.5f };
+    sd.position = { 1, 0, 1 };
+    sd.category = 2;
+    const ShapeId added = w.addShape(floor, sd);
+    CHECK(w.castRay({ 1, 5, 1 }, { 0, -10, 0 }, hit, 2) && hit.shape == added);
+    CHECK(w.overlapGeometry(Sphere{ 0.1f }, { { 1, -0.5f, 1 }, {} }, found) && found.size() == 1 && found[0] == added);
+}

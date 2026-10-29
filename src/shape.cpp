@@ -147,6 +147,8 @@ Vec3 cylinderSupport(float radius, float halfHeight, const Vec3& d) {
 }
 
 void buildShape(Shape& s) {
+    s.profile = PlanarProfile{};
+    s.inner = -1.0f;
     s.poly = Polyhedron{};
     s.radius = 0.0f;
     s.halfHeight = 0.0f;
@@ -258,9 +260,35 @@ void shapeBounds(const Shape& s, const Transform& xf, Vec3& lo, Vec3& hi) {
         hi = c + reach;
         return;
     }
-    lo = hi = xf.apply(s.poly.vertices[0]);
+    const Mat3 r = xf.q.toMat3();
+    // A prism's corners are its outline at both depths, so the outline's reach and the depth's reach add.
+    auto prism = [&](const Vec2* outline, size_t count, float zMin, float zMax) {
+        for (int i = 0; i < 3; ++i) {
+            const Vec3& row = r.r[i];
+            float near = FLT_MAX, far = -FLT_MAX;
+            for (size_t k = 0; k < count; ++k) {
+                const float x = row.x * outline[k].x + row.y * outline[k].y;
+                near = near < x ? near : x;
+                far = far > x ? far : x;
+            }
+            const float z0 = row.z * zMin, z1 = row.z * zMax;
+            lo[i] = near + (z0 < z1 ? z0 : z1) + xf.p[i];
+            hi[i] = far + (z0 > z1 ? z0 : z1) + xf.p[i];
+        }
+    };
+    if (const Prism* pr = std::get_if<Prism>(&s.geometry)) {
+        prism(pr->polygon.data(), pr->polygon.size(), pr->zMin, pr->zMax);
+        return;
+    }
+    if (const Box* bx = std::get_if<Box>(&s.geometry)) {
+        const Vec3& h = bx->halfExtents;
+        const Vec2 outline[4] = { { -h.x, -h.y }, { h.x, -h.y }, { h.x, h.y }, { -h.x, h.y } };
+        prism(outline, 4, -h.z, h.z);
+        return;
+    }
+    lo = hi = r * s.poly.vertices[0] + xf.p;
     for (const Vec3& v : s.poly.vertices) {
-        const Vec3 w = xf.apply(v);
+        const Vec3 w = r * v + xf.p;
         lo = minVec(lo, w);
         hi = maxVec(hi, w);
     }
