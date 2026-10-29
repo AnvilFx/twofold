@@ -68,7 +68,10 @@ that can only turn about z gets the inverse of its inertia about z, not the z en
 full inverse. The inverse mass matrix is the linear projection over the mass.
 
 `LockPlanar` is translation z plus rotation x and y. A planar body is still a normal 3D body
-with locks. See [decision 1](decisions/0001-planar-bodies-are-locked-3d-bodies.md).
+with locks. It also keeps its inverse mass and its inverse inertia about the plane normal
+for the 2D solve. Turning about the normal leaves its world inertia as it was, so a planar
+body skips the refresh of its world inverse mass as it turns. See
+[decision 29](decisions/0029-planar-pairs-are-solved-in-2d.md).
 
 ## Shapes
 
@@ -155,25 +158,31 @@ every input point.
 
 ### Broadphase
 
-Every shape except half-spaces has a leaf in a dynamic AABB tree. A leaf covers the
-shape's bounds grown by the speculative distance and a 100 mm margin, and moves in the
-tree only when the shape leaves it. Half-spaces are kept in a list of their own.
+Every body with a shape other than a half-space has a leaf in a dynamic AABB tree. A leaf
+covers the bounds of those shapes grown by the speculative distance and a 100 mm margin,
+and moves in the tree only when they leave it. Half-spaces are kept in a list of their own.
+A body with more than 64 shapes also keeps their leaves in a tree of its own, built the
+same way.
 
-The world keeps the sorted pairs of shapes whose leaves overlap, on different bodies with
-at least one dynamic. Each step, shapes whose leaves moved find their new pairs, and pairs
-whose leaves no longer overlap are dropped.
+The world keeps the sorted pairs of bodies whose leaves overlap, with at least one dynamic.
+Each step, bodies whose leaves moved find their new pairs, and pairs whose leaves no longer
+overlap are dropped.
 
-From those pairs and the half-spaces, a candidate goes to the narrowphase when the bounds
-overlap, the filters agree, and at least one body is moving: awake if dynamic, or
-kinematic with a nonzero velocity. Here each shape's bounds grow by the speculative
-distance, and a moving body's grow by how far it can travel in the step at its current
-velocity. Contacts between bodies that are both still are carried over untouched, which
-is what keeps a sleeping pile cheap.
+A kept pair goes on when at least one body is moving, awake if dynamic or kinematic with a
+nonzero velocity, and the bodies' bounds overlap once grown. Each body's bounds grow by the
+speculative distance, and a moving body's by how far it can travel in the step at its
+current velocity. Each body then lists its shapes that are not sensors and reach the other
+body's grown bounds, from its own tree when it has one. A shape of one list and a shape of
+the other go to the narrowphase when their grown bounds overlap and their filters agree. A
+half-space is paired with a body when either of the two moves and the body's grown bounds
+reach below its plane, and then with each of the body's shapes that does. Contacts between
+bodies that are both still are carried over untouched, which is what keeps a sleeping pile
+cheap.
 
 Ray casts, shape casts, overlap queries, the sweeps of continuous collision and waking
-query the same tree. See [Queries](#queries).
+query the same tree, and then the shapes of each body found. See [Queries](#queries).
 
-See [decision 16](decisions/0016-bounds-tree-with-persistent-pairs.md).
+See [decision 30](decisions/0030-bounds-tree-leaves-are-bodies.md).
 
 ### Narrowphase in 3D
 
@@ -272,12 +281,21 @@ only those lets the body seesaw.
 ### The planar path
 
 A pair tries the 2D path first when every dynamic body in it is planar and their plane
-normals are parallel. Static and kinematic bodies fit any plane. `makeProfile` turns
-each shape into a 2D profile in the plane: a polygon for a box or prism, a circle for a
-cylinder, plus the depth range it covers along the normal. A half-space whose plane stands
-on the body's plane, within the same tolerance, becomes a half-plane that covers every
-depth. It fails for anything that does not extrude along the normal, and then the pair
-uses the 3D path. Two half-planes always do.
+normals are parallel. Static and kinematic bodies fit any plane. Mesh pairs never do.
+`makeProfile` turns each shape into a 2D profile: a polygon for a box or prism, a circle
+for a cylinder, plus the depth range it covers along the normal. A half-space whose plane
+stands on the body's plane, within the same tolerance, becomes a half-plane that covers
+every depth. It fails for anything that does not extrude along the normal, and then the
+pair uses the 3D path. Two half-planes always do.
+
+A profile is made in the shape's body frame, for the plane normal as that body sees it,
+with the polygon's edge normals and the box around it. The shape keeps it until the normal
+it sees changes. Each body is placed in the plane once per round of collisions: its
+position and turn in the plane's 2D frame and its depth along the normal. The normal it
+sees is taken again only once it has drifted by 1e-5, so a layer's profiles are made once.
+A pair works in A's 2D frame and brings B's profile over by one turn and one shift. Two
+polygons or circles whose boxes are further apart than the margin are dropped there, and
+the polygon test stops once one edge separates them by more than the margin.
 
 A polygon meets a half-plane with the edge facing it most, a circle with one point. The
 line is taken at the middle of the other profile's depth range, which also covers a
@@ -352,6 +370,17 @@ contact points. The impulse is solved in one step along the current spin directi
 the total is clamped, so a planar body only takes impulse about the axes it can turn on.
 It resists spin about the normal too. The mix is the maximum, and a coefficient of zero
 skips it. See [decision 22](decisions/0022-rolling-resistance-follows-the-spin.md).
+
+A contact whose moving bodies are all planar in one plane, with its normal within 1e-3 of
+that plane, is solved in 2D. Its normal is projected into the plane and its one tangent
+lies in the plane. Each point keeps a scalar arm per direction, the turn about the plane
+normal a unit impulse gives, and its effective mass from the bodies' inverse mass and
+inverse inertia about the normal. The rows read and write the bodies' velocity and their
+spin about the normal. Rolling resistance there is one row about the normal. A contact
+holding no impulse skips warm starting, a point with no normal and no friction impulse
+skips its friction row, and a contact whose rows changed nothing leaves the bodies alone.
+A layer against a free 3D body uses the 3D rows. See
+[decision 29](decisions/0029-planar-pairs-are-solved-in-2d.md).
 
 A direction the bodies cannot move in, such as the depth axis of a planar body, has an
 effective mass of zero. Rounding can leave such a direction with a tiny nonzero response,
@@ -462,14 +491,16 @@ Meshes are never fast themselves. Time is lost for a moved body. The next step c
 with the velocity the solve gave it.
 
 For a planar body, the inner extent ignores the faces facing along the plane normal. A
-thin layer is wide in the plane, and that width is what keeps it from tunneling.
+thin layer is wide in the plane, and that width is what keeps it from tunneling. The shape
+keeps it, and finds it again only once the normal has moved in the shape's frame.
 
 See [decision 7](decisions/0007-continuous-collision-past-the-speculative-margin.md).
 
 ## Queries
 
 Queries read the world and never change it. Each takes a category mask, culls with the
-bounds tree, tests half-spaces from their own list, and works against every shape kind. A
+bounds tree and then with each body's shapes, from the body's own tree when it has one,
+tests half-spaces from their own list, and works against every shape kind. A
 planar body's shapes are ordinary 3D shapes to a query. Results come in shape index order
 unless noted.
 

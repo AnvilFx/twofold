@@ -3,9 +3,9 @@
 Rigid body physics for scenes that mix 2D and 3D bodies in one world.
 
 A body locked to a plane is still a 3D body, so it collides with everything else in the
-world. Two planar bodies that share a plane collide through a dedicated 2D path: their
-profiles are tested as polygons and circles, and contacts never push them apart along
-the plane normal.
+world. Two planar bodies that share a plane collide and solve through a dedicated 2D
+path: their profiles are tested as polygons and circles, their contacts are solved in the
+plane, and contacts never push them apart along the plane normal.
 
 ## Who does what
 

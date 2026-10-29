@@ -40,6 +40,161 @@ void makeAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {
 
 bool anchored(const Body& b) { return b.type != MotionType::Dynamic || !b.awake; }
 
+// Where the body has turned r since the substep's base pose.
+Vec3 turned(const Body& b, const Vec3& r) {
+    return b.dq.x == 0.0f && b.dq.y == 0.0f && b.dq.z == 0.0f ? r : b.dq.rotate(r);
+}
+
+constexpr float kAligned = 0.9999f;
+// How far a contact normal may lean out of the plane and still be solved in it.
+constexpr float kInPlane = 1e-3f;
+
+// Whether every body the contact moves is a dynamic body locked to one plane, n, with the normal in it.
+bool planarContact(const Body& a, const Body& b, const Vec3& normal, Vec3& n) {
+    const Body* first = nullptr;
+    for (const Body* x : { &a, &b }) {
+        if (x->type == MotionType::Static) { continue; }
+        if (x->type == MotionType::Kinematic || !x->planar()) { return false; }
+        if (!first) {
+            first = x;
+            n = x->planeNormal();
+        } else if (std::fabs(dot(n, x->planeNormal())) < kAligned) {
+            return false;
+        }
+    }
+    return first && std::fabs(dot(normal, n)) < kInPlane;
+}
+
+float planarMass(const Body& a, const Body& b, float armA, float armB) {
+    const float k = a.planeInvMass + b.planeInvMass + a.planeInvInertia * armA * armA + b.planeInvInertia * armB * armB;
+    return k > 1e-6f * (a.invMass + b.invMass) ? 1.0f / k : 0.0f;
+}
+
+void makePlanarAxes(const Body& a, const Body& b, const Contact& c, PlanarAxes* axes) {
+    const Vec3 n = c.plane;
+    for (int i = 0; i < c.count; ++i) {
+        const ContactPoint& p = c.points[i];
+        PlanarAxes& x = axes[i];
+        x.normalA = dot(n, cross(p.anchorA, c.normal));
+        x.normalB = dot(n, cross(p.anchorB, c.normal));
+        x.normalMass = planarMass(a, b, x.normalA, x.normalB);
+        x.tangentA = dot(n, cross(p.anchorA, c.tangent1));
+        x.tangentB = dot(n, cross(p.anchorB, c.tangent1));
+        x.tangentMass = planarMass(a, b, x.tangentA, x.tangentB);
+    }
+}
+
+// The velocities of a planar contact's bodies, with spin about the plane normal, held while its points are solved.
+struct PlanarState {
+    Vec3 va, vb;
+    float wa, wb;
+    float ma, mb, ia, ib;
+
+    PlanarState(const Body& a, const Body& b, const Vec3& n)
+        : va(a.v), vb(b.v), wa(dot(a.w, n)), wb(dot(b.w, n)), ma(a.planeInvMass), mb(b.planeInvMass),
+          ia(a.planeInvInertia), ib(b.planeInvInertia) {}
+
+    float speed(const Vec3& d, float armA, float armB) const { return dot(d, vb - va) + armB * wb - armA * wa; }
+
+    void push(const Vec3& d, float armA, float armB, float impulse) {
+        va -= d * (ma * impulse);
+        wa -= ia * armA * impulse;
+        vb += d * (mb * impulse);
+        wb += ib * armB * impulse;
+    }
+
+    void store(Body& a, Body& b, const Vec3& n, bool moveA, bool moveB) const {
+        if (moveA) {
+            a.v = va;
+            a.w = n * wa;
+        }
+        if (moveB) {
+            b.v = vb;
+            b.w = n * wb;
+        }
+    }
+};
+
+// The cosine and sine of the turn since the substep's base pose, about n.
+Vec2 planarTurn(const Body& b, const Vec3& n) {
+    const Quat& q = b.dq;
+    return { q.w * q.w - (q.x * q.x + q.y * q.y + q.z * q.z), 2.0f * q.w * dot(n, Vec3{ q.x, q.y, q.z }) };
+}
+
+void solvePlanar(Body& a, Body& b, Contact& c, const PlanarAxes* axes, const SolverContext& ctx, bool useBias) {
+    const bool moveA = !anchored(a), moveB = !anchored(b);
+    const Softness soft = (!moveA || !moveB) ? ctx.staticSoft : ctx.contactSoft;
+    const float shift = dot(b.dp - a.dp, c.normal);
+    const Vec2 ta = planarTurn(a, c.plane), tb = planarTurn(b, c.plane);
+    PlanarState st(a, b, c.plane);
+    bool changed = false;
+
+    for (int i = 0; i < c.count; ++i) {
+        ContactPoint& p = c.points[i];
+        const PlanarAxes& x = axes[i];
+        // An arm's tangent axis is its reach along the normal, and its normal axis its reach along the
+        // tangent turned a quarter, so the turned anchors reach along the normal by these.
+        const float reachA = ta.x * x.tangentA + ta.y * x.normalA;
+        const float reachB = tb.x * x.tangentB + tb.y * x.normalB;
+        const float sep = shift + reachB - reachA + p.adjustedSeparation;
+
+        float bias = 0.0f, massScale = 1.0f, impulseScale = 0.0f;
+        if (sep > 0.0f) {
+            bias = sep * ctx.invH;
+        } else if (useBias) {
+            bias = maxf(soft.biasRate * sep, -ctx.maxPushout);
+            massScale = soft.massScale;
+            impulseScale = soft.impulseScale;
+        }
+
+        const float vn = st.speed(c.normal, x.normalA, x.normalB);
+        float impulse = -x.normalMass * massScale * (vn + bias) - impulseScale * p.normalImpulse;
+        const float total = maxf(p.normalImpulse + impulse, 0.0f);
+        impulse = total - p.normalImpulse;
+        p.normalImpulse = total;
+        p.maxNormalImpulse = maxf(p.maxNormalImpulse, impulse);
+        if (impulse != 0.0f) {
+            st.push(c.normal, x.normalA, x.normalB, impulse);
+            changed = true;
+        }
+    }
+
+    for (int j = 0; j < c.count; ++j) {
+        const int i = useBias ? j : c.count - 1 - j;
+        ContactPoint& p = c.points[i];
+        const PlanarAxes& x = axes[i];
+        const float old = dot(p.tangentImpulse, c.tangent1);
+        // With no normal impulse the friction limit is zero, so a point holding no friction keeps none.
+        if (p.normalImpulse == 0.0f && old == 0.0f) { continue; }
+        changed = true;
+        const float limit = c.friction * p.normalImpulse;
+        const float t = minf(maxf(old - x.tangentMass * st.speed(c.tangent1, x.tangentA, x.tangentB), -limit), limit);
+        p.tangentImpulse = c.tangent1 * t;
+        st.push(c.tangent1, x.tangentA, x.tangentB, t - old);
+    }
+
+    if (c.rollingResistance > 0.0f) {
+        changed = true;
+        float total = dot(c.rollingImpulse, c.plane);
+        const float spin = st.wb - st.wa;
+        const float k = st.ia + st.ib;
+        if (spin != 0.0f && k > 0.0f) {
+            const float lambda = -spin / k;
+            total += lambda;
+            st.wa -= st.ia * lambda;
+            st.wb += st.ib * lambda;
+        }
+        float normal = 0.0f;
+        for (int i = 0; i < c.count; ++i) { normal += c.points[i].normalImpulse; }
+        const float limit = c.rollingResistance * c.rollingRadius * normal;
+        const float held = minf(maxf(total, -limit), limit);
+        st.wa -= st.ia * (held - total);
+        st.wb += st.ib * (held - total);
+        c.rollingImpulse = c.plane * held;
+    }
+    if (changed) { st.store(a, b, c.plane, moveA, moveB); }
+}
+
 // Pushes only the bodies that move, since an anchored body takes no impulse.
 void pushMoving(Body& a, Body& b, const Axis& x, float impulse, bool moveA, bool moveB) {
     if (moveA) {
@@ -50,11 +205,6 @@ void pushMoving(Body& a, Body& b, const Axis& x, float impulse, bool moveA, bool
         b.v += x.linearB * impulse;
         b.w += x.angularB * impulse;
     }
-}
-
-// Where the body has turned r since the substep's base pose.
-Vec3 turned(const Body& b, const Vec3& r) {
-    return b.dq.x == 0.0f && b.dq.y == 0.0f && b.dq.z == 0.0f ? r : b.dq.rotate(r);
 }
 
 // One step along the relative spin, so a body locked to a plane only takes impulse about the axes it can
@@ -98,12 +248,22 @@ Softness makeSoft(float hertz, float zeta, float h) {
     return { omega / a1, a2 * a3, a3 };
 }
 
-void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
-    makeAxes(a, b, c, axes);
+void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar) {
+    c.planar = planarContact(a, b, c.normal, c.plane);
+    if (c.planar) {
+        c.normal = normalize(c.normal - c.plane * dot(c.normal, c.plane));
+        c.tangent1 = cross(c.plane, c.normal);
+        c.tangent2 = c.plane;
+        makePlanarAxes(a, b, c, planar);
+    } else {
+        makeAxes(a, b, c, axes);
+    }
+    const PlanarState st(a, b, c.plane);
     for (int i = 0; i < c.count; ++i) {
         ContactPoint& p = c.points[i];
         p.adjustedSeparation = p.separation - dot(p.anchorB - p.anchorA, c.normal);
-        p.relativeVelocity = speedAlong(a, b, c.normal, axes[i].normal);
+        p.relativeVelocity = c.planar ? st.speed(c.normal, planar[i].normalA, planar[i].normalB)
+                                      : speedAlong(a, b, c.normal, axes[i].normal);
         p.maxNormalImpulse = 0.0f;
     }
     if (c.rollingResistance > 0.0f && c.count > 0) {
@@ -118,7 +278,7 @@ void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
     }
 }
 
-void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
+void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar) {
     const float shift = dot(b.dp - a.dp, c.normal);
     for (int i = 0; i < c.count; ++i) {
         ContactPoint& p = c.points[i];
@@ -126,12 +286,17 @@ void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes) {
         p.anchorB = b.dq.rotate(p.anchorB);
         p.adjustedSeparation += shift;
     }
-    makeAxes(a, b, c, axes);
+    if (c.planar) {
+        makePlanarAxes(a, b, c, planar);
+    } else {
+        makeAxes(a, b, c, axes);
+    }
 }
 
 void updateResponses(SolverData& s, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
         const Contact& c = s.contacts[ci];
+        if (c.planar) { continue; }
         const Body& a = s.bodies[c.bodyA];
         const Body& b = s.bodies[c.bodyB];
         PointAxes* axes = &s.axes[4 * ci];
@@ -147,7 +312,7 @@ void updateResponses(SolverData& s, const std::vector<uint32_t>& active) {
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
         Contact& c = s.contacts[ci];
-        prepareContact(s.bodies[c.bodyA], s.bodies[c.bodyB], c, &s.axes[4 * ci]);
+        prepareContact(s.bodies[c.bodyA], s.bodies[c.bodyB], c, &s.axes[4 * ci], &s.planarAxes[4 * ci]);
     }
 }
 
@@ -157,6 +322,27 @@ void warmStart(SolverData& s, const std::vector<uint32_t>& active) {
         const PointAxes* axes = &s.axes[4 * ci];
         Body& a = s.bodies[c.bodyA];
         Body& b = s.bodies[c.bodyB];
+        if (c.planar) {
+            bool held = c.rollingResistance > 0.0f;
+            for (int i = 0; i < c.count; ++i) {
+                held = held || c.points[i].normalImpulse != 0.0f || lengthSquared(c.points[i].tangentImpulse) != 0.0f;
+            }
+            if (!held) { continue; }
+            const PlanarAxes* x = &s.planarAxes[4 * ci];
+            PlanarState st(a, b, c.plane);
+            for (int i = 0; i < c.count; ++i) {
+                const ContactPoint& p = c.points[i];
+                st.push(c.normal, x[i].normalA, x[i].normalB, p.normalImpulse);
+                st.push(c.tangent1, x[i].tangentA, x[i].tangentB, dot(p.tangentImpulse, c.tangent1));
+            }
+            if (c.rollingResistance > 0.0f) {
+                const float r = dot(c.rollingImpulse, c.plane);
+                st.wa -= st.ia * r;
+                st.wb += st.ib * r;
+            }
+            st.store(a, b, c.plane, !anchored(a), !anchored(b));
+            continue;
+        }
         for (int i = 0; i < c.count; ++i) {
             const ContactPoint& p = c.points[i];
             push(a, b, axes[i].normal, p.normalImpulse);
@@ -176,6 +362,10 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
         const PointAxes* axes = &s.axes[4 * ci];
         Body& a = s.bodies[c.bodyA];
         Body& b = s.bodies[c.bodyB];
+        if (c.planar) {
+            solvePlanar(a, b, c, &s.planarAxes[4 * ci], ctx, useBias);
+            continue;
+        }
         const bool moveA = !anchored(a), moveB = !anchored(b);
         const Softness soft = (!moveA || !moveB) ? ctx.staticSoft : ctx.contactSoft;
         const Vec3 dp = b.dp - a.dp;
@@ -236,6 +426,23 @@ void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const 
         const PointAxes* axes = &s.axes[4 * ci];
         Body& a = s.bodies[c.bodyA];
         Body& b = s.bodies[c.bodyB];
+        if (c.planar) {
+            const PlanarAxes* x = &s.planarAxes[4 * ci];
+            PlanarState st(a, b, c.plane);
+            for (int i = 0; i < c.count; ++i) {
+                ContactPoint& p = c.points[i];
+                if (p.relativeVelocity > -ctx.restitutionThreshold || p.maxNormalImpulse == 0.0f) { continue; }
+                const float vn = st.speed(c.normal, x[i].normalA, x[i].normalB);
+                float impulse = -x[i].normalMass * (vn + c.restitution * p.relativeVelocity);
+                const float total = maxf(p.normalImpulse + impulse, 0.0f);
+                impulse = total - p.normalImpulse;
+                p.normalImpulse = total;
+                p.maxNormalImpulse = maxf(p.maxNormalImpulse, impulse);
+                st.push(c.normal, x[i].normalA, x[i].normalB, impulse);
+            }
+            st.store(a, b, c.plane, !anchored(a), !anchored(b));
+            continue;
+        }
         for (int i = 0; i < c.count; ++i) {
             ContactPoint& p = c.points[i];
             if (p.relativeVelocity > -ctx.restitutionThreshold || p.maxNormalImpulse == 0.0f) { continue; }

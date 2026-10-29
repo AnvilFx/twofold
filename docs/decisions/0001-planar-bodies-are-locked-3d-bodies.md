@@ -2,7 +2,7 @@
 
 Date: 2026-10-26
 
-Status: Accepted
+Status: Replaced by [decision 29](0029-planar-pairs-are-solved-in-2d.md)
 
 ## Context
 

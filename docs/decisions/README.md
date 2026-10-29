@@ -4,7 +4,7 @@ Design decisions worth explaining. Each record says what the problem was, what e
 considered, and what follows from the choice. When a decision changes, a new record
 replaces the old one instead of editing it.
 
-1. [Planar bodies are locked 3D bodies](0001-planar-bodies-are-locked-3d-bodies.md)
+1. [Planar bodies are locked 3D bodies](0001-planar-bodies-are-locked-3d-bodies.md), replaced by 29
 2. [Soft step contact solver](0002-soft-step-contact-solver.md)
 3. [Single threaded and deterministic](0003-single-threaded-and-deterministic.md)
 4. [Sort and sweep, rebuilt every step](0004-sort-and-sweep-rebuilt-every-step.md), replaced by 16
@@ -19,7 +19,7 @@ replaces the old one instead of editing it.
 13. [The relax pass takes friction in reverse](0013-relax-pass-takes-friction-in-reverse.md)
 14. [Edge queries pair edges near the overlap](0014-edge-queries-pair-edges-near-the-overlap.md)
 15. [Pairs that barely moved keep their contacts](0015-pairs-that-barely-moved-keep-their-contacts.md)
-16. [A bounds tree with persistent pairs](0016-bounds-tree-with-persistent-pairs.md)
+16. [A bounds tree with persistent pairs](0016-bounds-tree-with-persistent-pairs.md), replaced by 30
 17. [Soft joints with a settle pass](0017-soft-joints-with-a-settle-pass.md)
 18. [Limits and motors move the whole joint](0018-limits-and-motors-move-the-whole-joint.md)
 19. [Meshes collide one triangle at a time](0019-meshes-collide-one-triangle-at-a-time.md)
@@ -32,3 +32,5 @@ replaces the old one instead of editing it.
 26. [Events follow the solve, and sensors test overlap](0026-events-follow-the-solve-and-sensors-test-overlap.md)
 27. [Swing-twist rows follow the exact rates](0027-swing-twist-rows-follow-the-exact-rates.md)
 28. [Hulls are built about their own center](0028-hulls-are-built-about-their-own-center.md)
+29. [Planar pairs are solved in 2D](0029-planar-pairs-are-solved-in-2d.md)
+30. [Bounds tree leaves are bodies](0030-bounds-tree-leaves-are-bodies.md)

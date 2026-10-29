@@ -2,7 +2,7 @@
 
 Date: 2026-10-27
 
-Status: Accepted. Replaces [decision 4](0004-sort-and-sweep-rebuilt-every-step.md).
+Status: Replaced by [decision 30](0030-bounds-tree-leaves-are-bodies.md)
 
 ## Context
 

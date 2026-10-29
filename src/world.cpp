@@ -24,6 +24,8 @@ float coneSine(float swing) {
 
 // How far past its bounds a shape's leaf in the tree reaches, in meters.
 constexpr float kTreeMargin = 0.1f;
+// Bodies with more shapes than this keep them in a tree of their own.
+constexpr size_t kPartTree = 64;
 
 using Clock = std::chrono::steady_clock;
 
@@ -71,12 +73,19 @@ void updateInverseMass(Body& b) {
     if (b.type != MotionType::Dynamic || !b.awake) {
         b.invMassWorld = Mat3::zero();
         b.invInertiaWorld = Mat3::zero();
+        b.planeInvMass = 0.0f;
+        b.planeInvInertia = 0.0f;
         return;
     }
     b.invMassWorld = b.linearProj * b.invMass;
     const Mat3 r = b.xf.q.toMat3();
     const Mat3 iw = r * b.inertia * transpose(r);
     b.invInertiaWorld = invertSubspace(iw, ang, na);
+    if (b.planar()) {
+        const Vec3 n = b.planeNormal();
+        b.planeInvMass = b.invMass;
+        b.planeInvInertia = dot(n, b.invInertiaWorld * n);
+    }
 }
 
 bool movingAwake(const Body& b) {
@@ -143,7 +152,12 @@ struct World::Impl {
     std::vector<Contact> contacts;
     // Kept between steps so the rebuilt contact list doesn't allocate.
     std::vector<Contact> nextContacts;
+    // Lists every step rebuilds, kept for the same reason.
+    std::vector<float> growth;
+    std::vector<uint64_t> freshPairs, candidatePairs;
+    std::vector<uint32_t> activeContacts, fastContacts, fastSolidContacts;
     std::vector<PointAxes> axes;
+    std::vector<PlanarAxes> planarAxes;
     // Mesh triangles a fast pair ruled out at the start of the step, so collisions within the step can skip
     // them. Each pair's run is sorted by triangle, and the runs are in key order.
     struct BoundRun {
@@ -152,11 +166,12 @@ struct World::Impl {
     };
     std::vector<TriangleBound> triangleBounds;
     std::vector<BoundRun> boundRuns;
-    // Every shape but half-spaces, whose bounds are infinite and which are kept apart in planes.
+    // One leaf per body, over its shapes but half-spaces, whose bounds are infinite and which are kept apart
+    // in planes.
     BoundsTree tree;
     std::vector<uint32_t> planes;
-    // Sorted keys of shape pairs whose leaves overlap, and the shapes whose leaves changed since the
-    // pairs were last found.
+    // Sorted keys of body pairs whose leaves overlap, and the bodies whose leaves changed since the pairs
+    // were last found.
     std::vector<uint64_t> leafPairs;
     std::vector<uint32_t> refitted;
     std::vector<Joint> joints;
@@ -177,6 +192,8 @@ struct World::Impl {
     bool linksValid = false;
     Body worldBody;
     StepProfile profile;
+    // Counts rounds of collisions, so planar poses are placed again once bodies have moved.
+    uint32_t poseStamp = 1;
 
     // Sensor shapes in index order, and the sorted keys of sensor and visitor pairs overlapping after the
     // last step, with the sensor in the high half.
@@ -206,50 +223,113 @@ struct World::Impl {
         }
     }
 
-    // Every leaf covers its shape's bounds grown by the speculative distance.
-    void fit(uint32_t si, const Vec3& lo, const Vec3& hi) {
-        const Shape& s = shapes[si];
-        if (s.proxy < 0) { return; }
+    // Every leaf covers its body's bounds grown by the speculative distance.
+    void fit(uint32_t bi, const Vec3& lo, const Vec3& hi) {
+        const Body& b = bodies[bi];
+        if (b.proxy < 0) { return; }
         const Vec3 g{ tol.speculative, tol.speculative, tol.speculative };
-        if (tree.update(s.proxy, lo - g, hi + g, kTreeMargin * settings.lengthUnit)) { refitted.push_back(si); }
+        if (tree.update(b.proxy, lo - g, hi + g, kTreeMargin * settings.lengthUnit)) { refitted.push_back(bi); }
+    }
+
+    // Finds the bounds of a body's shapes, and returns false when it has none but half-spaces.
+    bool bound(Body& b) {
+        bool any = false;
+        const Vec3 g{ tol.speculative, tol.speculative, tol.speculative };
+        for (uint32_t si : b.shapes) {
+            Shape& s = shapes[si];
+            shapeBounds(s, b.xf * s.local, s.lo, s.hi);
+            if (s.kind == ShapeKind::HalfSpace) { continue; }
+            if (s.part >= 0) { b.parts.update(s.part, s.lo - g, s.hi + g, kTreeMargin * settings.lengthUnit); }
+            b.lo = any ? minVec(b.lo, s.lo) : s.lo;
+            b.hi = any ? maxVec(b.hi, s.hi) : s.hi;
+            any = true;
+        }
+        return any;
+    }
+
+    // A new leaf covers its bounds grown by the speculative distance and the margin.
+    int insertLeaf(BoundsTree& t, const Vec3& lo, const Vec3& hi, uint32_t item) const {
+        const float g = tol.speculative + kTreeMargin * settings.lengthUnit;
+        return t.insert(lo - Vec3{ g, g, g }, hi + Vec3{ g, g, g }, item);
+    }
+
+    // Makes the body's leaf and its tree of shapes again after its shapes changed.
+    void retrack(uint32_t bi) {
+        Body& b = bodies[bi];
+        if (b.proxy >= 0) {
+            tree.remove(b.proxy);
+            b.proxy = -1;
+        }
+        b.parts = BoundsTree{};
+        b.hasParts = false;
+        for (uint32_t si : b.shapes) { shapes[si].part = -1; }
+        if (!b.alive || !bound(b)) { return; }
+        b.proxy = insertLeaf(tree, b.lo, b.hi, bi);
+        refitted.push_back(bi);
+        if (b.shapes.size() <= kPartTree) { return; }
+        b.hasParts = true;
+        for (uint32_t si : b.shapes) {
+            Shape& s = shapes[si];
+            if (s.kind != ShapeKind::HalfSpace) { s.part = insertLeaf(b.parts, s.lo, s.hi, si); }
+        }
     }
 
     void track(uint32_t si) {
         Shape& s = shapes[si];
-        shapeBounds(s, bodies[s.body].xf * s.local, s.lo, s.hi);
-        if (s.kind == ShapeKind::HalfSpace) {
-            planes.push_back(si);
+        if (s.kind == ShapeKind::HalfSpace) { planes.push_back(si); }
+        Body& b = bodies[s.body];
+        if (!b.hasParts || s.kind == ShapeKind::HalfSpace) {
+            retrack(s.body);
             return;
         }
-        const float g = tol.speculative + kTreeMargin * settings.lengthUnit;
-        s.proxy = tree.insert(s.lo - Vec3{ g, g, g }, s.hi + Vec3{ g, g, g }, si);
-        refitted.push_back(si);
+        // A body that already has a tree of shapes takes one more without finding the others again.
+        shapeBounds(s, b.xf * s.local, s.lo, s.hi);
+        s.part = insertLeaf(b.parts, s.lo, s.hi, si);
+        b.lo = minVec(b.lo, s.lo);
+        b.hi = maxVec(b.hi, s.hi);
+        fit(s.body, b.lo, b.hi);
+        refitted.push_back(s.body);
     }
 
     void untrack(uint32_t si) {
         Shape& s = shapes[si];
-        if (s.proxy >= 0) {
-            tree.remove(s.proxy);
-            s.proxy = -1;
-        } else {
+        if (s.kind == ShapeKind::HalfSpace) {
             planes.erase(std::remove(planes.begin(), planes.end(), si), planes.end());
+        }
+        if (s.part >= 0) {
+            bodies[s.body].parts.remove(s.part);
+            s.part = -1;
         }
     }
 
     // Updates the bounds of a body's shapes after it moved.
     void place(uint32_t bi) {
+        if (bound(bodies[bi])) { fit(bi, bodies[bi].lo, bodies[bi].hi); }
+    }
+
+    // Calls visit(shape) for the shapes of a body found in the world's tree. A body with a tree of shapes
+    // visits those its search finds, any other body all of them.
+    template <class Search, class Visit>
+    void forEachShape(uint32_t bi, Search&& search, Visit&& visit) const {
         const Body& b = bodies[bi];
+        if (b.hasParts) {
+            search(b.parts, visit);
+            return;
+        }
         for (uint32_t si : b.shapes) {
-            Shape& s = shapes[si];
-            shapeBounds(s, b.xf * s.local, s.lo, s.hi);
-            fit(si, s.lo, s.hi);
+            if (shapes[si].kind != ShapeKind::HalfSpace) { visit(si); }
         }
     }
 
-    bool pairable(const Shape& a, const Shape& b) const {
-        return a.body != b.body && !a.sensor && !b.sensor &&
-               (bodies[a.body].type == MotionType::Dynamic || bodies[b.body].type == MotionType::Dynamic);
+    template <class Visit>
+    void forEachShape(uint32_t bi, const Vec3& lo, const Vec3& hi, Visit&& visit) const {
+        forEachShape(bi, [&](const BoundsTree& t, Visit& v) { t.query(lo, hi, v); }, visit);
     }
+
+    bool pairable(uint32_t a, uint32_t b) const {
+        return a != b && (bodies[a].type == MotionType::Dynamic || bodies[b].type == MotionType::Dynamic);
+    }
+    bool pairable(const Shape& a, const Shape& b) const { return !a.sensor && !b.sensor && pairable(a.body, b.body); }
 
     // Visits every shape whose leaf overlaps lo, hi, and every half-space. A half-space visits every shape.
     template <class Visit>
@@ -260,7 +340,7 @@ struct World::Impl {
             }
             return;
         }
-        tree.query(lo, hi, visit);
+        tree.query(lo, hi, [&](uint32_t bi) { forEachShape(bi, lo, hi, visit); });
         for (uint32_t si : planes) { visit(si); }
     }
 
@@ -406,15 +486,33 @@ struct World::Impl {
         return (length(b.v - a.v) + length(a.w) * bodyExtent(a) + length(b.w) * bodyExtent(b)) * dt;
     }
 
+    // A body's pose in the plane, placed once per round of collisions.
+    const PlanarPose& poseOf(const Body& b, const Vec3& n) const {
+        PlanarPose& p = b.planePose;
+        if (p.stamp != poseStamp || !(p.normal.x == n.x && p.normal.y == n.y && p.normal.z == n.z)) {
+            placeInPlane(p, b.xf, n);
+            p.stamp = poseStamp;
+        }
+        return p;
+    }
+
     // One manifold, or one for each way the triangles of a mesh face.
     void collidePair(const Shape& sa, const Shape& sb, float dt, std::vector<Manifold>& out,
                      TriangleBounds* bounds = nullptr) const {
         const Body& ba = bodies[sa.body];
         const Body& bb = bodies[sb.body];
-        const Transform xa = ba.xf * sa.local;
-        const Transform xb = bb.xf * sb.local;
         const float travel = relativeTravel(ba, bb, dt);
         const float margin = tol.speculative + travel;
+        out.clear();
+        Manifold m;
+        Vec3 n;
+        if (sa.kind != ShapeKind::Mesh && sb.kind != ShapeKind::Mesh && usePlanar(ba, bb, n) &&
+            collidePlanar(sa, poseOf(ba, n), sb, poseOf(bb, n), margin, tol, m)) {
+            if (m.count > 0) { out.push_back(m); }
+            return;
+        }
+        const Transform xa = ba.xf * sa.local;
+        const Transform xb = bb.xf * sb.local;
         const Motion mo{ ba.v, ba.w, ba.com, bb.v, bb.w, bb.com, dt, travel > tol.speculative };
         if (sa.kind == ShapeKind::Mesh) {
             collideMesh(sa, xa, sb, xb, margin, tol, mo, out, bounds);
@@ -422,15 +520,10 @@ struct World::Impl {
         }
         if (sb.kind == ShapeKind::Mesh) {
             collideMesh(sb, xb, sa, xa, margin, tol, mo.swapped(), out, bounds);
-            for (Manifold& m : out) { m.normal = -m.normal; }
+            for (Manifold& x : out) { x.normal = -x.normal; }
             return;
         }
-        out.clear();
-        Manifold m;
-        Vec3 n;
-        if (!usePlanar(ba, bb, n) || !collidePlanar(sa, xa, sb, xb, n, margin, tol, m)) {
-            collide(sa, xa, sb, xb, margin, tol, mo, m);
-        }
+        collide(sa, xa, sb, xb, margin, tol, mo, m);
         if (m.count > 0) { out.push_back(m); }
     }
 
@@ -653,25 +746,28 @@ struct World::Impl {
 
     void updateContacts(float dt) {
         const Clock::time_point start = Clock::now();
+        ++poseStamp;
         // Each shape's bounds grow by the speculative distance and how far its body can travel this step.
-        std::vector<float> grow(bodies.size(), tol.speculative);
+        std::vector<float>& grow = growth;
+        grow.assign(bodies.size(), tol.speculative);
         for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
             const Body& b = bodies[bi];
             if (!b.alive || b.type == MotionType::Static) { continue; }
             if (lengthSquared(b.v) == 0.0f && lengthSquared(b.w) == 0.0f) { continue; }
             grow[bi] += (length(b.v) + length(b.w) * bodyExtent(b)) * dt;
             const Vec3 g{ grow[bi], grow[bi], grow[bi] };
-            for (uint32_t si : b.shapes) { fit(si, shapes[si].lo - g, shapes[si].hi + g); }
+            fit(bi, b.lo - g, b.hi + g);
         }
 
         std::sort(refitted.begin(), refitted.end());
         refitted.erase(std::unique(refitted.begin(), refitted.end()), refitted.end());
-        std::vector<uint64_t> fresh;
-        for (uint32_t si : refitted) {
-            const Shape& s = shapes[si];
-            if (!s.alive || s.proxy < 0) { continue; }
-            tree.query(s.proxy, [&](uint32_t oi) {
-                if (pairable(s, shapes[oi])) { fresh.push_back(pairKey(std::min(si, oi), std::max(si, oi))); }
+        std::vector<uint64_t>& fresh = freshPairs;
+        fresh.clear();
+        for (uint32_t bi : refitted) {
+            const Body& b = bodies[bi];
+            if (!b.alive || b.proxy < 0) { continue; }
+            tree.query(b.proxy, [&](uint32_t oi) {
+                if (pairable(bi, oi)) { fresh.push_back(pairKey(std::min(bi, oi), std::max(bi, oi))); }
             });
         }
         refitted.clear();
@@ -687,6 +783,7 @@ struct World::Impl {
         auto test = [&](uint32_t ia, uint32_t ib, std::vector<uint64_t>& out) {
             const Shape& sa = shapes[ia];
             const Shape& sb = shapes[ib];
+            if (sa.sensor || sb.sensor) { return; }
             const Vec3 ga{ grow[sa.body], grow[sa.body], grow[sa.body] };
             const Vec3 gb{ grow[sb.body], grow[sb.body], grow[sb.body] };
             if (!boxesOverlap(sa.lo - ga, sa.hi + ga, sb.lo - gb, sb.hi + gb)) { return; }
@@ -695,27 +792,71 @@ struct World::Impl {
             out.push_back(pairKey(std::min(ia, ib), std::max(ia, ib)));
         };
 
-        std::vector<uint64_t> candidates;
+        // The shapes of each body near the other's bounds are paired, by their grown bounds.
+        struct Near {
+            uint32_t shape;
+            Vec3 lo, hi;
+        };
+        std::vector<Near> nearA, nearB;
+        auto near = [&](uint32_t bi, float g, const Vec3& lo, const Vec3& hi, std::vector<Near>& out) {
+            out.clear();
+            const Vec3 grown{ g, g, g };
+            forEachShape(bi, lo, hi, [&](uint32_t si) {
+                const Shape& s = shapes[si];
+                if (s.sensor || !boxesOverlap(s.lo, s.hi, lo, hi)) { return; }
+                out.push_back({ si, s.lo - grown, s.hi + grown });
+            });
+        };
+
+        std::vector<uint64_t>& candidates = candidatePairs;
+        candidates.clear();
         size_t kept = 0;
         for (uint64_t key : leafPairs) {
             const uint32_t ia = (uint32_t)(key >> 32), ib = (uint32_t)(key & 0xffffffffu);
-            const Shape& sa = shapes[ia];
-            const Shape& sb = shapes[ib];
-            if (!sa.alive || !sb.alive || sa.proxy < 0 || sb.proxy < 0 || !pairable(sa, sb)) { continue; }
-            if (!tree.overlap(sa.proxy, sb.proxy)) { continue; }
+            const Body& ba = bodies[ia];
+            const Body& bb = bodies[ib];
+            if (!ba.alive || !bb.alive || ba.proxy < 0 || bb.proxy < 0 || !pairable(ia, ib)) { continue; }
+            if (!tree.overlap(ba.proxy, bb.proxy)) { continue; }
             leafPairs[kept++] = key;
-            if (movingAwake(bodies[sa.body]) || movingAwake(bodies[sb.body])) { test(ia, ib, candidates); }
+            if (!movingAwake(ba) && !movingAwake(bb)) { continue; }
+            const float g = grow[ia] + grow[ib];
+            const Vec3 reach{ g, g, g };
+            if (!boxesOverlap(ba.lo - reach, ba.hi + reach, bb.lo, bb.hi) || joined(ia, ib)) { continue; }
+            near(ia, grow[ia], bb.lo - reach, bb.hi + reach, nearA);
+            near(ib, grow[ib], ba.lo - reach, ba.hi + reach, nearB);
+            for (const Near& x : nearA) {
+                const Shape& sa = shapes[x.shape];
+                for (const Near& y : nearB) {
+                    if (!boxesOverlap(x.lo, x.hi, y.lo, y.hi)) { continue; }
+                    const Shape& sb = shapes[y.shape];
+                    if (!(sa.category & sb.mask) || !(sb.category & sa.mask)) { continue; }
+                    candidates.push_back(pairKey(std::min(x.shape, y.shape), std::max(x.shape, y.shape)));
+                }
+            }
         }
         leafPairs.resize(kept);
 
         for (uint32_t pi : planes) {
             const Shape& sp = shapes[pi];
             const bool planeMoving = movingAwake(bodies[sp.body]);
+            const float gp = grow[sp.body];
+            const Transform xp = bodies[sp.body].xf * sp.local;
+            const Vec3 n = xp.q.rotate({ 0, 0, 1 });
+            const float offset = dot(n, xp.p);
+            // Whether bounds grown by g reach below the plane.
+            auto reaches = [&](const Vec3& lo, const Vec3& hi, float g) {
+                const Vec3 c = (lo + hi) * 0.5f, e = (hi - lo) * 0.5f + Vec3{ g, g, g };
+                return dot(c, n) - offset <= e.x * std::fabs(n.x) + e.y * std::fabs(n.y) + e.z * std::fabs(n.z);
+            };
             for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
                 const Body& b = bodies[bi];
                 if (!b.alive || bi == sp.body || (!planeMoving && !movingAwake(b))) { continue; }
+                const float g = gp + grow[bi];
+                if (b.proxy >= 0 && !reaches(b.lo, b.hi, g)) { continue; }
                 for (uint32_t si : b.shapes) {
-                    if (pairable(sp, shapes[si])) { test(pi, si, candidates); }
+                    const Shape& s = shapes[si];
+                    if (s.kind != ShapeKind::HalfSpace && !reaches(s.lo, s.hi, g)) { continue; }
+                    if (pairable(sp, s)) { test(pi, si, candidates); }
                 }
             }
         }
@@ -732,14 +873,15 @@ struct World::Impl {
         std::vector<uint32_t> toWake;
         std::vector<Manifold> found;
         const float matchSq = tol.speculative * tol.speculative;
+        // Both lists are in key order.
+        auto old = contacts.begin();
         for (uint64_t key : candidates) {
             const uint32_t ia = (uint32_t)(key >> 32), ib = (uint32_t)(key & 0xffffffffu);
             const Shape& sa = shapes[ia];
             const Shape& sb = shapes[ib];
             const Body& ba = bodies[sa.body];
             const Body& bb = bodies[sb.body];
-            auto old = std::lower_bound(contacts.begin(), contacts.end(), key,
-                                        [](const Contact& x, uint64_t k) { return x.key < k; });
+            while (old != contacts.end() && old->key < key) { ++old; }
             auto oldEnd = old;
             while (oldEnd != contacts.end() && oldEnd->key == key) { ++oldEnd; }
             const bool hasOld = old != oldEnd;
@@ -910,7 +1052,7 @@ struct World::Impl {
                 continue;
             }
             Contact& c = contacts[ci];
-            rebaseContact(bodies[c.bodyA], bodies[c.bodyB], c, &axes[4 * ci]);
+            rebaseContact(bodies[c.bodyA], bodies[c.bodyB], c, &axes[4 * ci], &planarAxes[4 * ci]);
         }
         for (Body& b : bodies) {
             b.dp = Vec3{};
@@ -919,6 +1061,7 @@ struct World::Impl {
         }
 
         const float matchSq = tol.speculative * tol.speculative;
+        ++poseStamp;
         std::vector<Manifold> found;
         std::vector<uint8_t> taken;
         for (size_t fi = 0; fi < fast.size(); ++fi) {
@@ -966,7 +1109,7 @@ struct World::Impl {
                 p.anchorA = m.points[i].position - up - a.com;
                 p.anchorB = m.points[i].position + up - b.com;
             }
-            prepareContact(a, b, c, &axes[4 * ci]);
+            prepareContact(a, b, c, &axes[4 * ci], &planarAxes[4 * ci]);
             // Restitution needs the speed the pair approached at, from the nearest point the step started with.
             for (int i = 0; i < c.count; ++i) {
                 ContactPoint& p = c.points[i];
@@ -999,7 +1142,8 @@ struct World::Impl {
             b.xf.q = integrate(b.xf.q, b.w, h);
             b.dq = b.xf.q * b.qBase.conjugate();
             b.xf.p = b.com - b.xf.q.rotate(b.localCenter);
-            if (b.type == MotionType::Dynamic) { updateInverseMass(b); }
+            // A body locked to a plane only turns about its normal, which leaves its world inertia as it was.
+            if (b.type == MotionType::Dynamic && !b.planar()) { updateInverseMass(b); }
         }
     }
 
@@ -1085,12 +1229,16 @@ struct World::Impl {
         if ((s.kind != ShapeKind::Convex && s.kind != ShapeKind::Cylinder) || !b.planar()) { return s.minExtent; }
         const Vec3 n = s.local.q.unrotate(b.xf.q.unrotate(b.planeNormal()));
         if (s.kind == ShapeKind::Cylinder) { return std::fabs(n.z) > 0.9f ? s.radius : s.minExtent; }
+        // The normal only drifts in the shape's frame, so the faces picked stay the same.
+        if (s.inner >= 0.0f && lengthSquared(n - s.innerKey) <= 1e-10f) { return s.inner; }
         float inner = FLT_MAX;
         for (size_t i = 0; i < s.poly.normals.size(); ++i) {
             if (std::fabs(dot(s.poly.normals[i], n)) > 0.9f) { continue; }
             inner = minf(inner, s.poly.offsets[i] - dot(s.poly.normals[i], s.centroid));
         }
-        return inner < FLT_MAX ? inner : s.minExtent;
+        s.innerKey = n;
+        s.inner = inner < FLT_MAX ? inner : s.minExtent;
+        return s.inner;
     }
 
     // Speculative contacts cover motion at the velocities the step started with. A shape that moved well
@@ -1113,7 +1261,8 @@ struct World::Impl {
             for (uint32_t si : b.shapes) {
                 const Shape& s = shapes[si];
                 if (s.kind == ShapeKind::Mesh || s.sensor) { continue; }
-                if (moved + sweeps[bi].angle * reach(s, b) > b.expectedTravel + 0.5f * innerExtent(s, b)) {
+                const float travel = moved + sweeps[bi].angle * reach(s, b);
+                if (travel > b.expectedTravel && travel > b.expectedTravel + 0.5f * innerExtent(s, b)) {
                     fast[si] = 1;
                     any = true;
                 }
@@ -1428,7 +1577,12 @@ struct World::Impl {
         }
 
         // Fast pairs are collided again mid-step, and those without a planar body before every substep.
-        std::vector<uint32_t> active, fast, fastSolid;
+        std::vector<uint32_t>& active = activeContacts;
+        std::vector<uint32_t>& fast = fastContacts;
+        std::vector<uint32_t>& fastSolid = fastSolidContacts;
+        active.clear();
+        fast.clear();
+        fastSolid.clear();
         for (uint32_t i = 0; i < contacts.size(); ++i) {
             const Contact& c = contacts[i];
             const Body& a = bodies[c.bodyA];
@@ -1465,8 +1619,9 @@ struct World::Impl {
 
         const Clock::time_point solveStart = Clock::now();
         axes.resize(4 * contacts.size());
+        planarAxes.resize(4 * contacts.size());
         for (uint32_t ji : activeJoints) { joints[ji].force = joints[ji].torque = Vec3{}; }
-        SolverData data{ bodies, contacts, axes, joints, worldBody };
+        SolverData data{ bodies, contacts, axes, planarAxes, joints, worldBody };
         prepareContacts(data, active);
         const std::vector<uint32_t> impact = impactContacts(active, ctx.restitutionThreshold);
         for (int i = 0; i < n; ++i) {
@@ -1514,14 +1669,10 @@ struct World::Impl {
         }
         // Leaves of moved bodies cover the step's start and end, which the sweeps need.
         for (uint32_t bi = 0; bi < bodies.size(); ++bi) {
-            const Body& b = bodies[bi];
+            Body& b = bodies[bi];
             if (!b.alive || b.type == MotionType::Static || (b.type == MotionType::Dynamic && !b.awake)) { continue; }
-            for (uint32_t si : b.shapes) {
-                Shape& s = shapes[si];
-                const Vec3 lo = s.lo, hi = s.hi;
-                shapeBounds(s, b.xf * s.local, s.lo, s.hi);
-                fit(si, minVec(lo, s.lo), maxVec(hi, s.hi));
-            }
+            const Vec3 lo = b.lo, hi = b.hi;
+            if (bound(b)) { fit(bi, minVec(lo, b.lo), maxVec(hi, b.hi)); }
         }
         const Clock::time_point continuousStart = Clock::now();
         solveContinuous();
@@ -1610,6 +1761,7 @@ void World::destroyBody(BodyId id) {
     b->shapes.clear();
     b->alive = false;
     ++b->generation;
+    w.retrack(id.index);
     w.freeBodies.push_back(id.index);
 }
 
@@ -1673,6 +1825,7 @@ void World::removeShape(ShapeId id) {
     Body& b = w.bodies[bi];
     b.shapes.erase(std::remove(b.shapes.begin(), b.shapes.end(), id.index), b.shapes.end());
     w.untrack(id.index);
+    w.retrack(bi);
     s->alive = false;
     ++s->generation;
     w.freeShapes.push_back(id.index);
@@ -1750,6 +1903,7 @@ void World::setLocalTransform(ShapeId id, const Vec3& position, const Quat& rota
     if (!s) { return; }
     w.untrack(id.index);
     s->local = { position, normalize(rotation) };
+    s->profile = PlanarProfile{};
     w.track(id.index);
     for (Contact& c : w.contacts) {
         if (c.shapeA == id.index || c.shapeB == id.index) { c.reusable = false; }
@@ -1860,7 +2014,7 @@ void World::setMotionType(BodyId id, MotionType type) {
     }
     if (type == MotionType::Dynamic) { b->awake = true; }
     if (type != MotionType::Dynamic) { w.removeAnchoredContacts(id.index); }
-    w.refitted.insert(w.refitted.end(), b->shapes.begin(), b->shapes.end());
+    w.refitted.push_back(id.index);
     w.updateMass(*b);
     w.wakeBodies({ id.index });
 }
@@ -2277,7 +2431,10 @@ bool World::castRay(const Vec3& origin, const Vec3& translation, RayHit& hit, ui
     bool found = false;
     // Shapes are tried in index order, so the lowest index wins a tie.
     std::vector<uint32_t> near(w.planes);
-    w.tree.raycast(origin, translation, [&](uint32_t si) { near.push_back(si); });
+    auto onRay = [&](const BoundsTree& t, auto& visit) { t.raycast(origin, translation, visit); };
+    w.tree.raycast(origin, translation, [&](uint32_t bi) {
+        w.forEachShape(bi, onRay, [&](uint32_t si) { near.push_back(si); });
+    });
     std::sort(near.begin(), near.end());
     for (uint32_t si : near) {
         const Shape& s = w.shapes[si];
@@ -2333,7 +2490,8 @@ bool World::castRayAll(const Vec3& origin, const Vec3& translation, std::vector<
         hits.push_back(h);
     };
     for (uint32_t si : w.planes) { add(si); }
-    w.tree.raycast(origin, translation, add);
+    auto onRay = [&](const BoundsTree& t, auto& visit) { t.raycast(origin, translation, visit); };
+    w.tree.raycast(origin, translation, [&](uint32_t bi) { w.forEachShape(bi, onRay, add); });
     std::sort(hits.begin(), hits.end(), [](const RayHit& a, const RayHit& b) { return a.shape.index < b.shape.index; });
     size_t kept = 0;
     for (size_t i = 0; i < hits.size(); ++i) {
@@ -2370,7 +2528,10 @@ bool World::castGeometry(const Geometry& geometry, const Transform& pose, const 
     const Vec3 reach = (hi - lo) * 0.5f + Vec3{ touch, touch, touch };
     // Shapes are tried in index order, so the lowest index wins a tie.
     std::vector<uint32_t> near(w.planes);
-    w.tree.boxcast(center, translation, reach, [&](uint32_t si) { near.push_back(si); });
+    auto onPath = [&](const BoundsTree& t, auto& visit) { t.boxcast(center, translation, reach, visit); };
+    w.tree.boxcast(center, translation, reach, [&](uint32_t bi) {
+        w.forEachShape(bi, onPath, [&](uint32_t si) { near.push_back(si); });
+    });
     std::sort(near.begin(), near.end());
     float best = 1.0f;
     bool found = false;
@@ -2410,7 +2571,9 @@ bool World::overlapGeometry(const Geometry& geometry, const Transform& pose, std
     lo -= Vec3{ touch, touch, touch };
     hi += Vec3{ touch, touch, touch };
     for (uint32_t si : w.planes) { found.push_back(w.shapeId(si)); }
-    w.tree.query(lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    w.tree.query(lo, hi, [&](uint32_t bi) {
+        w.forEachShape(bi, lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    });
     return keepSorted(found, [&](uint32_t si) {
         const Shape& s = w.shapes[si];
         if (s.sensor || !(s.category & mask)) { return false; }
@@ -2423,7 +2586,9 @@ bool World::overlapAabb(const Aabb& box, std::vector<ShapeId>& found, uint32_t m
     const Impl& w = *impl_;
     found.clear();
     for (uint32_t si : w.planes) { found.push_back(w.shapeId(si)); }
-    w.tree.query(box.lower, box.upper, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    w.tree.query(box.lower, box.upper, [&](uint32_t bi) {
+        w.forEachShape(bi, box.lower, box.upper, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    });
     const Vec3 c = (box.lower + box.upper) * 0.5f, e = (box.upper - box.lower) * 0.5f;
     return keepSorted(found, [&](uint32_t si) {
         const Shape& s = w.shapes[si];
@@ -2441,7 +2606,9 @@ bool World::overlapPoint(const Vec3& point, std::vector<ShapeId>& found, uint32_
     const float touch = kTouching * w.settings.lengthUnit;
     const Vec3 lo = point - Vec3{ touch, touch, touch }, hi = point + Vec3{ touch, touch, touch };
     for (uint32_t si : w.planes) { found.push_back(w.shapeId(si)); }
-    w.tree.query(lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    w.tree.query(lo, hi, [&](uint32_t bi) {
+        w.forEachShape(bi, lo, hi, [&](uint32_t si) { found.push_back(w.shapeId(si)); });
+    });
     return keepSorted(found, [&](uint32_t si) {
         const Shape& s = w.shapes[si];
         if (s.sensor || !(s.category & mask)) { return false; }

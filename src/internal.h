@@ -3,27 +3,31 @@
 #include <cstdint>
 #include <vector>
 
+#include "tree.h"
 #include "twofold/mesh.h"
 #include "twofold/world.h"
 
 namespace twofold {
 
 // std::fmax and std::fmin, NaN and signed zeros included, but inline. MSVC makes them library calls.
+// Ordered unequal values take one select. Only equal values and NaN take the branch.
 inline float maxf(float a, float b) {
-    if (a > b) { return a; }
-    if (b > a) { return b; }
-    if (a != a) { return b; }
-    if (b != b) { return a; }
-    // Equal. Only zeros can differ, and the sum of two zeros is negative only when both are.
-    return a == 0.0f ? a + b : a;
+    if (a == b || a != a || b != b) {
+        if (a != a) { return b; }
+        if (b != b) { return a; }
+        // Equal. Only zeros can differ, and the sum of two zeros is negative only when both are.
+        return a == 0.0f ? a + b : a;
+    }
+    return a > b ? a : b;
 }
 
 inline float minf(float a, float b) {
-    if (a < b) { return a; }
-    if (b < a) { return b; }
-    if (a != a) { return b; }
-    if (b != b) { return a; }
-    return a == 0.0f ? -(-a + -b) : a;
+    if (a == b || a != a || b != b) {
+        if (a != a) { return b; }
+        if (b != b) { return a; }
+        return a == 0.0f ? -(-a + -b) : a;
+    }
+    return a < b ? a : b;
 }
 
 struct TriangleMesh::Data {
@@ -100,6 +104,37 @@ MassProperties polyhedronMass(const Polyhedron& poly, float density);
 
 enum class ShapeKind : uint8_t { Sphere, Convex, HalfSpace, Mesh, Cylinder };
 
+enum class ProfileKind : uint8_t { None, Polygon, Circle, HalfPlane };
+
+// A shape seen along a plane normal, in its body's frame, with 2D coordinates along u and v and depth along
+// key, the body-frame normal it was made for. None when the shape doesn't extrude along key.
+struct PlanarProfile {
+    Vec3 key, u, v;
+    ProfileKind kind = ProfileKind::None;
+    std::vector<Vec2> points, normals;
+    Vec2 center;
+    float radius = 0.0f;
+    // Half the size of the box around the polygon or circle, centered on center.
+    Vec2 extent;
+    // The half-plane holds the points p at depth z with dot(normal, p) <= offset - tilt * z.
+    Vec2 normal;
+    float offset = 0.0f, tilt = 0.0f;
+    float zLo = 0.0f, zHi = 0.0f;
+};
+
+// A body's pose in a plane: the plane normal it was placed for, that normal in the body's frame with the
+// body's 2D axes around it, and the body's position, turn and depth in the plane's own 2D frame.
+struct PlanarPose {
+    Vec3 normal;
+    Vec3 key, u, v;
+    Vec3 axisU, axisV;
+    Vec2 position, turn;
+    float depth = 0.0f;
+    uint32_t stamp = 0;
+};
+
+void placeInPlane(PlanarPose& pose, const Transform& xf, const Vec3& n);
+
 struct Shape {
     uint32_t generation = 0;
     bool alive = false;
@@ -126,9 +161,15 @@ struct Shape {
     // Distance from the centroid to the nearest face.
     float minExtent = 0.0f;
 
-    // Bounds at the body's current pose, and the shape's leaf in the world's tree.
+    // Bounds at the body's current pose, and the shape's leaf in its body's own tree when it has one.
     Vec3 lo, hi;
-    int proxy = -1;
+    int part = -1;
+    // Made on first use by the planar path, for its body's pose key, and again when that key changes.
+    mutable PlanarProfile profile;
+    // Distance from the centroid to the nearest face along the plane a planar body moves in, for that
+    // plane's normal in the shape's frame. Negative until found.
+    mutable Vec3 innerKey;
+    mutable float inner = -1.0f;
 };
 
 void buildShape(Shape& shape);
@@ -234,9 +275,22 @@ struct Body {
 
     std::vector<uint32_t> shapes;
     void* userData = nullptr;
+    // Bounds of the shapes other than half-spaces, and the body's leaf in the world's tree.
+    Vec3 lo, hi;
+    int proxy = -1;
+    // A body with many shapes keeps their leaves in a tree of its own, so finding the ones near a box doesn't
+    // test them all.
+    BoundsTree parts;
+    bool hasParts = false;
+    // Placed by the planar path at most once per round of collisions.
+    mutable PlanarPose planePose;
 
     Mat3 invMassWorld = Mat3::zero();
     Mat3 invInertiaWorld = Mat3::zero();
+    // For a body locked to a plane, its inverse mass and its inverse inertia about the plane normal. Zero while
+    // it can't move.
+    float planeInvMass = 0.0f;
+    float planeInvInertia = 0.0f;
     Mat3 linearProj;
     Mat3 angularProj;
     // Motion since qBase, the orientation contact anchors are measured in.
@@ -295,10 +349,10 @@ struct Motion {
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
              float margin, const Tolerances& tol, const Motion& motion, Manifold& m);
 
-// Collides two shapes that both extrude along n, as 2D profiles in the plane normal to n.
-// Returns false when either shape does not extrude along n.
-bool collidePlanar(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
-                   const Vec3& n, float margin, const Tolerances& tol, Manifold& m);
+// Collides two shapes that both extrude along n, as 2D profiles in the plane normal to n. Takes the poses of
+// the shapes' bodies. Returns false when either shape does not extrude along n.
+bool collidePlanar(const Shape& a, const PlanarPose& bodyA, const Shape& b, const PlanarPose& bodyB, float margin,
+                   const Tolerances& tol, Manifold& m);
 
 // A mesh triangle found no nearer to the other shape than distance.
 struct TriangleBound {
@@ -371,6 +425,13 @@ struct PointAxes {
     Axis normal, tangent1, tangent2;
 };
 
+// The axes of a point of a planar contact: for the normal and the tangent in the plane, the turn about the
+// plane normal a unit impulse gives each body per unit of its inverse inertia, and the effective mass.
+struct PlanarAxes {
+    float normalA = 0.0f, normalB = 0.0f, normalMass = 0.0f;
+    float tangentA = 0.0f, tangentB = 0.0f, tangentMass = 0.0f;
+};
+
 struct Contact {
     uint64_t key = 0;
     // Orders the contacts of one pair. Only a mesh pair has more than one.
@@ -386,6 +447,10 @@ struct Contact {
     float rollingRadius = 0.0f;
     // Angular impulse on body B.
     Vec3 rollingImpulse;
+    // Solved in the plane with normal plane, since every body it moves is locked to that plane and the normal
+    // lies in it. Its tangent1 is then the tangent in the plane.
+    bool planar = false;
+    Vec3 plane;
     int count = 0;
     ContactPoint points[4];
     // The normal and the pose of body B in body A's frame when the points were collided.
@@ -473,6 +538,7 @@ struct SolverData {
     std::vector<Body>& bodies;
     std::vector<Contact>& contacts;
     std::vector<PointAxes>& axes;
+    std::vector<PlanarAxes>& planarAxes;
     std::vector<Joint>& joints;
     // Stands in for the world at joint ends fixed in it.
     Body& world;
@@ -482,10 +548,10 @@ Axis makeAxis(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, cons
 float speedAlong(const Body& a, const Body& b, const Vec3& d, const Axis& x);
 void push(Body& a, Body& b, const Axis& x, float impulse);
 
-void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes);
+void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar);
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active);
 // Re-expresses anchors as the bodies' current lever arms, before their dp and dq are reset.
-void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes);
+void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar);
 // Turned bodies respond to impulses through their turned inertia.
 void updateResponses(SolverData& s, const std::vector<uint32_t>& active);
 void warmStart(SolverData& s, const std::vector<uint32_t>& active);
