@@ -48,15 +48,22 @@ Not yet implemented: dynamic meshes.
 
 ## Building
 
-Requires CMake 3.21 and a C++17 compiler.
+Requires CMake 3.21 and a C++17 compiler. Builds with MSVC on Windows, GCC and Clang on
+Linux, and Apple Clang on macOS.
 
 ```
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+ctest --test-dir build -C Release
 ```
 
 Tests and the viewer build only when Twofold is the top-level project.
+
+On Linux the viewer needs the X11 and OpenGL development packages. On Debian or Ubuntu:
+
+```
+sudo apt install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+```
 
 To use Twofold from another CMake project:
 

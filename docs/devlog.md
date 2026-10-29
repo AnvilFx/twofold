@@ -60,6 +60,16 @@ Dropping speculative points that weren't closing looked like a cheap win and was
 twelve Cutouts sets frames past 20 mm went from 107 to 649 and past 50 mm from 1 to 78, and
 a test of a near miss failed.
 
+Builds with GCC and Clang now. GCC stopped at a missing `<cstdint>` in the hull builder,
+which MSVC's headers pulled in on their own. Clang compiled everything, but four shape cast
+tests failed from -O1 up: `Vec3::operator[]` read `(&x)[i]`, which indexes past `x` and is
+undefined, and casts against a mesh missed. It picks the member by index now. MSVC gives
+the same results bit for bit and the same timings.
+
+On macOS the viewer keeps a display scale of one, since the system already scales the
+window. A CI workflow builds and tests on Linux with GCC and Clang, on macOS and on
+Windows.
+
 ## 2026-10-29 00:50
 
 Meshes was the slowest bench scene and the furthest behind Jolt, about six times its time.

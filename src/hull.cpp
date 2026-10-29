@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <iterator>
 #include <unordered_map>
 

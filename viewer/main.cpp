@@ -165,7 +165,12 @@ struct App {
     // horizontal center, within that monitor.
     void updateScale() {
         ImGuiStyle& style = ImGui::GetStyle();
+#ifdef __APPLE__
+        // macOS sizes the window in points and scales it to the display itself.
+        const float scale = 1.0f;
+#else
         const float scale = GetWindowScaleDPI().x;
+#endif
         if (scale == style.FontScaleDpi) { return; }
         const float ratio = scale / style.FontScaleDpi;
         style = baseStyle;
