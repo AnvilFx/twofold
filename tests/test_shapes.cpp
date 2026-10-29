@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 #include "test.h"
@@ -116,6 +117,43 @@ TEST(degenerate_prisms_have_volume) {
         CHECK(d.finite);
         CHECK(d.touching);
         CHECK(d.deepest < 0.05f);
+    }
+}
+
+TEST(thin_rods_land_without_bouncing_up) {
+    uint32_t s = 0x2545f491u;
+    auto next = [&s]() {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        return (float)(s & 0xffffff) / (float)0xffffff;
+    };
+    for (int k = 0; k < 40; ++k) {
+        const Vec3 axis = normalize(Vec3{ next() * 2 - 1, next() * 2 - 1, next() * 2 - 1 });
+        const Quat rotation = Quat::axisAngle(axis, next() * 6.2831853f);
+        World w;
+        BodyDesc fd;
+        fd.type = MotionType::Static;
+        fd.rotation = Quat::fromTo({ 0, 0, 1 }, { 0, 1, 0 });
+        const BodyId f = w.createBody(fd);
+        ShapeDesc slab;
+        slab.geometry = Prism{ { { -4, -4 }, { 4, -4 }, { 4, 4 }, { -4, 4 } }, -1, 0 };
+        w.addShape(f, slab);
+        BodyDesc bd;
+        bd.position = { 0.1f, 1, 0.05f };
+        bd.rotation = rotation;
+        const BodyId b = w.createBody(bd);
+        ShapeDesc sd;
+        sd.geometry = Box{ { 0.005f, 0.005f, 0.5f } };
+        w.addShape(b, sd);
+        float highest = 0.0f, fastestSpin = 0.0f;
+        for (int i = 0; i < 240; ++i) {
+            w.step(kDt);
+            if (i > 40) { highest = std::fmax(highest, w.position(b).y); }
+            fastestSpin = std::fmax(fastestSpin, length(w.angularVelocity(b)));
+        }
+        CHECK(highest < 1.0f);
+        CHECK(fastestSpin < 1000.0f);
     }
 }
 

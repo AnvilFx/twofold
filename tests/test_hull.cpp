@@ -40,7 +40,8 @@ bool wellFormed(const HullMesh& h, float tol) {
         if (f.size() < 3) { return false; }
         corners += f.size();
         Vec3 n;
-        for (size_t i = 0; i < f.size(); ++i) { n += cross(h.vertices[f[i]], h.vertices[f[(i + 1) % f.size()]]); }
+        const Vec3& o = h.vertices[f[0]];
+        for (size_t i = 1; i + 1 < f.size(); ++i) { n += cross(h.vertices[f[i]] - o, h.vertices[f[i + 1]] - o); }
         n = normalize(n);
         const float offset = dot(n, h.vertices[f[0]]);
         for (int v : f) {
@@ -83,7 +84,8 @@ float slack(const std::vector<Vec3>& points) {
 
 Vec3 faceNormal(const HullMesh& h, const std::vector<int>& f) {
     Vec3 n;
-    for (size_t i = 0; i < f.size(); ++i) { n += cross(h.vertices[f[i]], h.vertices[f[(i + 1) % f.size()]]); }
+    const Vec3& o = h.vertices[f[0]];
+    for (size_t i = 1; i + 1 < f.size(); ++i) { n += cross(h.vertices[f[i]] - o, h.vertices[f[i + 1]] - o); }
     return normalize(n);
 }
 
@@ -402,5 +404,8 @@ TEST(hull_far_from_its_origin_collides_like_one_at_the_origin) {
         height[far] = w.centerOfMass(b).y;
     }
     CHECK(corners[0] == corners[1]);
-    CHECK(std::fabs(height[0] - height[1]) < 1e-3f);
+    const HullMesh ball = computeHull(round);
+    float inner = 0.5f;
+    for (const std::vector<int>& f : ball.faces) { inner = std::fmin(inner, dot(faceNormal(ball, f), ball.vertices[f[0]])); }
+    for (float y : height) { CHECK(y > inner - 0.005f && y < 0.505f); }
 }

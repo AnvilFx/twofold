@@ -552,8 +552,6 @@ void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, P
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active);
 // Re-expresses anchors as the bodies' current lever arms, before their dp and dq are reset.
 void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar);
-// Turned bodies respond to impulses through their turned inertia.
-void updateResponses(SolverData& s, const std::vector<uint32_t>& active);
 void warmStart(SolverData& s, const std::vector<uint32_t>& active);
 void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias);
 void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx);
