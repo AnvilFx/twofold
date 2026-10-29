@@ -1142,8 +1142,6 @@ struct World::Impl {
             b.xf.q = integrate(b.xf.q, b.w, h);
             b.dq = b.xf.q * b.qBase.conjugate();
             b.xf.p = b.com - b.xf.q.rotate(b.localCenter);
-            // A body locked to a plane only turns about its normal, which leaves its world inertia as it was.
-            if (b.type == MotionType::Dynamic && !b.planar()) { updateInverseMass(b); }
         }
     }
 
@@ -1573,6 +1571,7 @@ struct World::Impl {
             b.expectedTravel = (length(b.v) + length(b.w) * bodyExtent(b)) * dt;
             b.dp = Vec3{};
             b.dq = Quat{};
+            // The world inertia stays fixed through the substeps to match the effective masses built from it.
             updateInverseMass(b);
         }
 
@@ -1634,7 +1633,6 @@ struct World::Impl {
             solveContacts(data, active, ctx, true);
             if (!impact.empty()) { solveContacts(data, impact, ctx, true); }
             integratePositions(h);
-            updateResponses(data, active);
             solveJoints(data, activeJoints, ctx, false);
             solveContacts(data, active, ctx, false);
             if (!impact.empty()) { solveContacts(data, impact, ctx, false); }

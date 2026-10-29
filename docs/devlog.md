@@ -3,6 +3,59 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-29 16:12
+
+CI failed on macOS: a degenerate prism in the drop test was still in the air after two
+seconds. The macOS build fuses multiply-adds in the tests, so the prism started in a
+slightly different pose. The same thing happens on Windows with other poses. A 1 cm by
+1 cm by 1 m box rod dropped flat from 1 m in 200 random orientations came back above its
+drop height 32 times, the worst at 1.8e8 m.
+
+The world inverse inertia was rebuilt after every position integration and the contact
+responses with it, but the effective masses were built once per step. A rod has about
+5000 times more inertia across it than along it, so a small turn made the two disagree and
+every impulse added energy. The inertia now stays fixed for the step, and the per substep
+response update is gone. See
+[decision 31](decisions/0031-world-inertia-is-fixed-for-the-step.md).
+
+200 drops of each, above the drop height / fastest spin:
+
+| Body | Before | After |
+| --- | --- | --- |
+| 1 cm box rod | 32, 2e10 rad/s | 0, 400 rad/s |
+| 1 cm cylinder rod | 13, 5.6e15 rad/s | 0, 149 rad/s |
+| Degenerate prism | 36, 4.6e9 rad/s | 1, 363 rad/s |
+
+What's left is a rod landing flat at 3 m/s, which can still bounce to 0.83 m with 4
+substeps. 8 substeps settle it. Capping the turn per substep at 45 degrees takes the
+bounce down to 0.49 m.
+
+The older note that Dominoes needs the response update no longer holds. Over 12 seed sets,
+frames past 5 mm:
+
+| Scene | Before | After |
+| --- | --- | --- |
+| Dominoes | 12969 | 6676 |
+| Sweeper | 9972 | 9899 |
+| Hulls | 12000 | 11760 |
+| Flat layers | 18888 | 18890 |
+| Rain, 4 sets | 72944 | 72805 |
+
+Frames past 20 and 50 mm are the same within noise, except Rain, where they fall from
+15179 to 14652 and 1769 to 1649. Rain's deepest overlap over the last half second is worse
+in 4 of 6 seed sets, 21 mm against 14 averaged over the sets. Tower, Pyramid, Slopes,
+Sleeping and Cutouts didn't change.
+
+Tests:
+
+- A thin rod drop test, 40 orientations. It fails before this change.
+- The hull well-formed check took face normals from cross products of absolute positions,
+  which lose precision far from the origin. They are now relative to a face vertex.
+- The far from origin hull test compared the height of a ball that is still rolling after
+  two seconds. It now checks that both heights lie between the ball's inner and outer
+  radius.
+- test_outline.cpp was missing <algorithm>.
+
 ## 2026-10-29 04:00
 
 The README now gives examples of what AnvilFx directs: the 2D path, the bounding volume

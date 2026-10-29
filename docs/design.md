@@ -69,9 +69,7 @@ full inverse. The inverse mass matrix is the linear projection over the mass.
 
 `LockPlanar` is translation z plus rotation x and y. A planar body is still a normal 3D body
 with locks. It also keeps its inverse mass and its inverse inertia about the plane normal
-for the 2D solve. Turning about the normal leaves its world inertia as it was, so a planar
-body skips the refresh of its world inverse mass as it turns. See
-[decision 29](decisions/0029-planar-pairs-are-solved-in-2d.md).
+for the 2D solve. See [decision 29](decisions/0029-planar-pairs-are-solved-in-2d.md).
 
 ## Shapes
 
@@ -136,7 +134,8 @@ every input point.
    barely moved keeps its points. New contact points inherit impulses from the old ones they
    continue.
 2. **Step state.** Every body records its pose at the start of the step, resets its motion
-   since that pose (`dp`, `dq`), and refreshes its world inverse mass.
+   since that pose (`dp`, `dq`), and refreshes its world inverse mass. That stays fixed
+   until the next step.
 3. **Active contacts.** Contacts with an awake dynamic body take part in the solve. Pairs
    whose relative motion over the step exceeds the speculative distance are also listed as
    fast.
@@ -347,9 +346,9 @@ is its separation at the start plus how much `dp` and `dq` have closed it. So th
 sees separation change between substeps without collision running again.
 
 Each point direction's lever arms, velocity change per unit impulse and effective mass are
-built once per step. The angular responses are updated after each position integration,
-so a turned body responds through its turned inertia. The effective masses stay as they
-were at the start of the step.
+built once per step, from each body's world inverse inertia at the start of the step. That
+inertia stays fixed through the substeps, so the responses and the effective masses agree.
+See [decision 31](decisions/0031-world-inertia-is-fixed-for-the-step.md).
 
 Friction is a two-axis cone, clamped by the point's normal impulse times the mixed
 friction. The biased pass solves friction points in order, the relax pass in reverse. With
@@ -675,6 +674,9 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   sleeping.
 - A thin body hitting the ground at 2000 m/s can still come back up at 5 to 6 m/s with
   restitution 0. Up to 500 m/s it stays under 0.6 m/s.
+- A 1 cm by 1 cm by 1 m rod that lands flat at 3 m/s can bounce up to 0.83 m with 4
+  substeps. The two points across its width spin it hard about its length. 8 substeps
+  settle it.
 - Cylinder pairs overlapping by less than 4 cm keep the feature axis estimate, which in
   rare poses is off by up to 30 mm.
 - A ragdoll piled under other bodies with no friction can be pushed 0.17 rad past its

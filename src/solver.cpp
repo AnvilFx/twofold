@@ -293,22 +293,6 @@ void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, Pl
     }
 }
 
-void updateResponses(SolverData& s, const std::vector<uint32_t>& active) {
-    for (uint32_t ci : active) {
-        const Contact& c = s.contacts[ci];
-        if (c.planar) { continue; }
-        const Body& a = s.bodies[c.bodyA];
-        const Body& b = s.bodies[c.bodyB];
-        PointAxes* axes = &s.axes[4 * ci];
-        for (int i = 0; i < c.count; ++i) {
-            for (Axis* x : { &axes[i].normal, &axes[i].tangent1, &axes[i].tangent2 }) {
-                x->angularA = a.invInertiaWorld * x->armA;
-                x->angularB = b.invInertiaWorld * x->armB;
-            }
-        }
-    }
-}
-
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
         Contact& c = s.contacts[ci];
