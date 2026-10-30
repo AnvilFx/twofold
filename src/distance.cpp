@@ -206,6 +206,73 @@ Convex convexOf(const Shape& s) {
     return c;
 }
 
+namespace {
+
+enum class Verdict : uint8_t { Open, Within, Beyond };
+
+// GJK from start, leaving the simplex and its point v nearest the origin. With a limit of zero or more, stops
+// as soon as the gap between the cores is known to be within the limit or beyond it.
+Verdict search(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb, const Vec3& start,
+               float limit, Simplex& s, Vec3& v, bool& overlap) {
+    const bool bounded = limit >= 0.0f;
+    if (lengthSquared(start) > 0.0f) {
+        s.v[0].a = support(a, xa, start);
+        s.v[0].b = support(b, xb, -start);
+    } else {
+        s.v[0].a = a.cylinder ? xa.apply({ a.rim, 0.0f, a.halfHeight }) : xa.apply(a.points[0]);
+        s.v[0].b = b.cylinder ? xb.apply({ b.rim, 0.0f, b.halfHeight }) : xb.apply(b.points[0]);
+    }
+    s.v[0].w = s.v[0].b - s.v[0].a;
+    s.u[0] = 1.0;
+    s.count = 1;
+    v = s.v[0].w;
+    overlap = false;
+    for (int iter = 0; iter < kMaxIterations; ++iter) {
+        const float vv = dot(v, v);
+        if (vv < 1.0e-14f) {
+            overlap = true;
+            return bounded ? Verdict::Within : Verdict::Open;
+        }
+        if (bounded && vv <= limit * limit) { return Verdict::Within; }
+        Vertex n;
+        n.a = support(a, xa, v);
+        n.b = support(b, xb, -v);
+        n.w = n.b - n.a;
+        const float vw = dot(v, n.w);
+        if (bounded && vw > 0.0f && vw * vw > limit * limit * vv) { return Verdict::Beyond; }
+        if (vv - vw <= 1.0e-6f * vv) { break; }
+        bool repeated = false;
+        for (int i = 0; i < s.count; ++i) { repeated = repeated || lengthSquared(s.v[i].w - n.w) < 1.0e-14f; }
+        if (repeated) { break; }
+
+        const Simplex previous = s;
+        s.v[s.count++] = n;
+        if (!solve(s)) {
+            overlap = true;
+            return bounded ? Verdict::Within : Verdict::Open;
+        }
+        const Vec3 next = closest(s);
+        if (dot(next, next) >= vv) {
+            s = previous;
+            break;
+        }
+        v = next;
+    }
+    return Verdict::Open;
+}
+
+}
+
+bool apart(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb, float limit) {
+    if (a.halfSpace || b.halfSpace || limit < 0.0f) { return distance(a, xa, b, xb).distance > limit; }
+    Simplex s;
+    Vec3 v;
+    bool overlap;
+    const Verdict verdict = search(a, xa, b, xb, {}, limit + a.radius + b.radius, s, v, overlap);
+    if (verdict != Verdict::Open) { return verdict == Verdict::Beyond; }
+    return length(v) - a.radius - b.radius > limit;
+}
+
 DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb, const Vec3& start) {
     if (a.halfSpace || b.halfSpace) {
         if (a.halfSpace && b.halfSpace) { return { xa.p, xb.p, { 0, 0, 1 }, FLT_MAX }; }
@@ -217,46 +284,9 @@ DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, c
     }
 
     Simplex s;
-    if (lengthSquared(start) > 0.0f) {
-        s.v[0].a = support(a, xa, start);
-        s.v[0].b = support(b, xb, -start);
-    } else {
-        s.v[0].a = a.cylinder ? xa.apply({ a.rim, 0.0f, a.halfHeight }) : xa.apply(a.points[0]);
-        s.v[0].b = b.cylinder ? xb.apply({ b.rim, 0.0f, b.halfHeight }) : xb.apply(b.points[0]);
-    }
-    s.v[0].w = s.v[0].b - s.v[0].a;
-    s.u[0] = 1.0;
-    s.count = 1;
-    Vec3 v = s.v[0].w;
-    bool overlap = false;
-    for (int iter = 0; iter < kMaxIterations; ++iter) {
-        const float vv = dot(v, v);
-        if (vv < 1.0e-14f) {
-            overlap = true;
-            break;
-        }
-        Vertex n;
-        n.a = support(a, xa, v);
-        n.b = support(b, xb, -v);
-        n.w = n.b - n.a;
-        if (vv - dot(v, n.w) <= 1.0e-6f * vv) { break; }
-        bool repeated = false;
-        for (int i = 0; i < s.count; ++i) { repeated = repeated || lengthSquared(s.v[i].w - n.w) < 1.0e-14f; }
-        if (repeated) { break; }
-
-        const Simplex previous = s;
-        s.v[s.count++] = n;
-        if (!solve(s)) {
-            overlap = true;
-            break;
-        }
-        const Vec3 next = closest(s);
-        if (dot(next, next) >= vv) {
-            s = previous;
-            break;
-        }
-        v = next;
-    }
+    Vec3 v;
+    bool overlap;
+    search(a, xa, b, xb, start, -1.0f, s, v, overlap);
 
     Point pointA, pointB;
     for (int i = 0; i < s.count; ++i) {

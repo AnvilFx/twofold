@@ -3,6 +3,25 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-30 03:46
+
+Collision is most of what's left between Twofold and Jolt in Rain, Hulls, Sweeper and
+Meshes, and nearly all of it is pairs that touch. The edge query's Gauss map tests and the
+face queries' vertex scans now take four candidates at a time, and only the pairs that pass
+are finished one by one, in the old order. The GJK check after a pruned edge query stops
+as soon as its bounds settle the answer. Two loops recomputed the best dot product on
+every step, and the edge box test now marks each vertex once. None of it changes a result:
+every scene keeps its hash, with and without SIMD.
+
+Whole steps with sleep off, ms, before and after: Hulls 0.529 and 0.470, Rain 0.687 and
+0.653, Sweeper 0.328 and 0.308, Meshes 1.414 and 1.384. With sleep on, Hulls goes from
+0.437 to 0.326.
+
+Tried and dropped: warm-starting GJK (Rain still averages ten iterations), a looser GJK
+tolerance (it moves normals, like the certificate rejected before), and caching separating
+axes for pairs with no contact (they only cost 0.03 to 0.06 ms a frame). See
+[decision 33](decisions/0033-sat-tests-run-four-candidates-at-a-time.md).
+
 ## 2026-10-30 01:47
 
 Contacts are solved four at a time now, with SSE2 or NEON. They are colored first, so no

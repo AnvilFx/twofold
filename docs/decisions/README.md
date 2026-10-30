@@ -36,3 +36,4 @@ replaces the old one instead of editing it.
 30. [Bounds tree leaves are bodies](0030-bounds-tree-leaves-are-bodies.md)
 31. [World inertia is fixed for the step](0031-world-inertia-is-fixed-for-the-step.md)
 32. [Contacts are solved four at a time by color](0032-contacts-are-solved-four-at-a-time-by-color.md)
+33. [SAT tests run four candidates at a time](0033-sat-tests-run-four-candidates-at-a-time.md)
