@@ -328,11 +328,19 @@ struct ManifoldPoint {
     float predicted = 0.0f;
 };
 
+// The faces or edges of two polyhedra that a manifold was clipped from.
+struct Feature {
+    enum Kind : uint8_t { None, FaceA, FaceB, Edges };
+    Kind kind = None;
+    int a = -1, b = -1;
+};
+
 // Normal points from shape A to shape B.
 struct Manifold {
     Vec3 normal;
     ManifoldPoint points[4];
     int count = 0;
+    Feature feature;
 };
 
 struct Tolerances {
@@ -362,8 +370,9 @@ struct Motion {
     Motion swapped() const { return { linearB, angularB, centerB, linearA, angularA, centerA, dt, fast }; }
 };
 
+// With reuse, two polyhedra test the edge pair it names, while its arcs still cross, in place of every edge pair.
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
-             float margin, const Tolerances& tol, const Motion& motion, Manifold& m);
+             float margin, const Tolerances& tol, const Motion& motion, Manifold& m, const Feature* reuse = nullptr);
 
 // Collides two shapes that both extrude along n, as 2D profiles in the plane normal to n. Takes the poses of
 // the shapes' bodies. Returns false when either shape does not extrude along n.
@@ -473,6 +482,7 @@ struct Contact {
     Vec3 localNormal;
     Vec3 baseOffset;
     Quat baseTurn;
+    Feature feature;
     bool reusable = false;
     // A contact removed between steps stays in place until the next step drops it.
     bool removed = false;

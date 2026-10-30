@@ -214,6 +214,22 @@ void edgeBlocks(const FramePoly& p, const std::vector<int>& list, std::vector<Ed
     }
 }
 
+// The axis across edge i of a and edge j of b, pointing out of a, and the pair's separation along it. False
+// for edges too close to parallel.
+bool edgeAxis(const FramePoly& a, const FramePoly& b, int i, int j, Vec3& axis, float& separation) {
+    const Polyhedron::Edge& ea = a.src->edges[i];
+    const Polyhedron::Edge& eb = b.src->edges[j];
+    const Vec3 pa = a.v[ea.v0];
+    const Vec3 pb = b.v[eb.v0];
+    axis = cross(a.v[ea.v1] - pa, b.v[eb.v1] - pb);
+    const float len = length(axis);
+    if (len < kParallelEdges * ea.length * eb.length) { return false; }
+    axis = axis / len;
+    if (dot(axis, pa - a.centroid) < 0.0f) { axis = -axis; }
+    separation = dot(axis, pb - pa);
+    return true;
+}
+
 // An edge pair is a candidate when its arcs cross on the Gauss map of the Minkowski difference.
 // The deciding pair meets within reach of both shapes, so only edges reaching into the overlap of
 // their bounds, grown by reach, are paired. The arc tests run on kLanes edges of b at a time.
@@ -241,14 +257,9 @@ EdgeQuery queryEdges(const FramePoly& a, const FramePoly& b, float reach, std::v
             for (int lane = 0; hits != 0; ++lane, hits >>= 1) {
                 if (!(hits & 1)) { continue; }
                 const int j = nearB[k * kLanes + lane];
-                const Vec3 pa = a.v[ea[i].v0];
-                const Vec3 pb = b.v[eb[j].v0];
-                Vec3 axis = cross(a.v[ea[i].v1] - pa, b.v[eb[j].v1] - pb);
-                const float len = length(axis);
-                if (len < kParallelEdges * ea[i].length * eb[j].length) { continue; }
-                axis = axis / len;
-                if (dot(axis, pa - a.centroid) < 0.0f) { axis = -axis; }
-                const float s = dot(axis, pb - pa);
+                Vec3 axis;
+                float s;
+                if (!edgeAxis(a, b, i, j, axis, s)) { continue; }
                 if (s > q.separation) {
                     q.separation = s;
                     q.a = i;
@@ -410,8 +421,25 @@ struct ConvexBuffers {
     ClipBuffers clip;
 };
 
+// The edge pair of f as an edge query. Empty when f is not an edge pair or its arcs no longer cross.
+EdgeQuery reusedEdges(const FramePoly& a, const FramePoly& b, const Feature& f) {
+    EdgeQuery q;
+    if (f.kind != Feature::Edges) { return q; }
+    const Polyhedron::Edge& ea = a.src->edges[f.a];
+    const Polyhedron::Edge& eb = b.src->edges[f.b];
+    const Vec3 ga = a.arc[f.a], gb = b.arc[f.b];
+    const float cba = dot(b.n[eb.f0], ga), dba = dot(b.n[eb.f1], ga);
+    const float adc = dot(a.n[ea.f0], gb), bdc = dot(a.n[ea.f1], gb);
+    if (cba * dba >= 0.0f || adc * bdc >= 0.0f || cba * bdc >= 0.0f) { return q; }
+    if (edgeAxis(a, b, f.a, f.b, q.axis, q.separation)) {
+        q.a = f.a;
+        q.b = f.b;
+    }
+    return q;
+}
+
 void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const Transform& xb,
-                   float margin, const Tolerances& tol, const Motion& motion, Manifold& m) {
+                   float margin, const Tolerances& tol, const Motion& motion, Manifold& m, const Feature* reuse) {
     thread_local ConvexBuffers buf;
     const FramePoly a = ownFrame(sa.poly);
     const FramePoly b = otherFrame(sb.poly, { xa.q.unrotate(xb.p - xa.p), xa.q.conjugate() * xb.q }, buf.frame);
@@ -420,20 +448,27 @@ void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const 
     if (fa.separation > margin) { return; }
     const FaceQuery fb = queryFaces(b, a, margin, buf.points);
     if (fb.separation > margin) { return; }
-    // An edge axis only wins with less overlap than the best face axis.
-    const float reach = maxf(margin, -maxf(fa.separation, fb.separation));
-    const EdgeQuery eq = queryEdges(a, b, reach, buf.nearA, buf.nearB, buf.edges);
+    EdgeQuery eq = reuse ? reusedEdges(a, b, *reuse) : EdgeQuery{};
     if (eq.separation > margin) { return; }
-    // Pruned edges can hold the only axis separating shapes that are further apart than margin.
-    if (eq.pruned && apart(convexOf(sa), xa, convexOf(sb), xb, margin)) { return; }
+    if (!reuse || (reuse->kind == Feature::Edges && eq.a < 0)) {
+        // An edge axis only wins with less overlap than the best face axis.
+        const float reach = maxf(margin, -maxf(fa.separation, fb.separation));
+        eq = queryEdges(a, b, reach, buf.nearA, buf.nearB, buf.edges);
+        if (eq.separation > margin) { return; }
+        // Pruned edges can hold the only axis separating shapes that are further apart than margin.
+        if (eq.pruned && apart(convexOf(sa), xa, convexOf(sb), xb, margin)) { return; }
+    }
 
     const float absTol = 0.5f * tol.linearSlop;
     if (eq.a >= 0 && eq.separation > 0.9f * maxf(fa.separation, fb.separation) + absTol) {
         edgeContact(a, b, eq, xa, margin, tol.linearSlop, motion, buf.clip, m);
+        m.feature = { Feature::Edges, eq.a, eq.b };
     } else if (fb.separation > 0.98f * fa.separation + absTol) {
         faceContact(b, fb.index, a, true, xa, margin, tol.linearSlop, motion.swapped(), buf.clip, m);
+        m.feature = { Feature::FaceB, -1, fb.index };
     } else {
         faceContact(a, fa.index, b, false, xa, margin, tol.linearSlop, motion, buf.clip, m);
+        m.feature = { Feature::FaceA, fa.index, -1 };
     }
 }
 
@@ -1566,8 +1601,9 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
 }
 
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
-             float margin, const Tolerances& tol, const Motion& motion, Manifold& m) {
+             float margin, const Tolerances& tol, const Motion& motion, Manifold& m, const Feature* reuse) {
     m.count = 0;
+    m.feature = Feature{};
     const ShapeKind ka = a.kind, kb = b.kind;
     if (ka == ShapeKind::HalfSpace && kb == ShapeKind::HalfSpace) { return; }
     if (ka == ShapeKind::Mesh || kb == ShapeKind::Mesh) { return; }
@@ -1595,7 +1631,7 @@ void collide(const Shape& a, const Transform& xa, const Shape& b, const Transfor
     } else if (ka == ShapeKind::Cylinder || kb == ShapeKind::Cylinder) {
         collideRound(a, xa, b, xb, margin, tol, motion, m);
     } else {
-        collideConvex(a, xa, b, xb, margin, tol, motion, m);
+        collideConvex(a, xa, b, xb, margin, tol, motion, m, reuse && reuse->kind != Feature::None ? reuse : nullptr);
     }
 }
 
