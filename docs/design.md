@@ -421,8 +421,13 @@ group whose normal is closest to its own. A fast mesh pair keeps the triangles i
 at the start of the step, with their distances. Collided again, it skips each one while
 that distance, less how far the two bodies have moved since, stays past the margin.
 
-See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md) and
-[decision 24](decisions/0024-fast-solid-pairs-collide-every-substep.md).
+A pair of polyhedra that turned less than 0.1 rad against itself since the step started
+searches its faces again but tests only the edge pair it last met on, while that pair's
+arcs still cross. One that last met on a face tests no edge pair.
+
+See [decision 8](decisions/0008-collide-fast-pairs-again-mid-step.md),
+[decision 24](decisions/0024-fast-solid-pairs-collide-every-substep.md) and
+[decision 34](decisions/0034-fast-pairs-keep-their-edge-pair-within-the-step.md).
 
 ## Joints
 

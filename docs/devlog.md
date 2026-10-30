@@ -3,6 +3,23 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-30 12:54
+
+Fast pairs are collided again before every substep, and that was a quarter to a third of
+a step in Rain, Hulls, Meshes and Sweeper. Most of those collisions find what the last one
+found. Pairs of polyhedra now keep the edge pair they last met on and test only that one,
+as long as they turned less than 0.1 rad since the step started and the pair's arcs still
+cross. The face queries still run every time, so a switch to a face is never missed.
+
+Whole steps with sleep off, ms, before and after: Hulls 0.43 and 0.38, Sweeper 0.32 and
+0.30. With sleep on, Hulls 0.32 and 0.27. Rain and Meshes are the same, since their time
+goes to cylinders and triangles. Results change where fast polyhedra touch, and over 12
+sets of 32 seeds the overlap counts move within noise.
+
+Reusing faces too was faster still, but 8% of the reused features weren't the ones a
+search would pick, and Hulls overlapped more. Dropping the turn limit did the same. See
+[decision 34](decisions/0034-fast-pairs-keep-their-edge-pair-within-the-step.md).
+
 ## 2026-10-30 03:46
 
 Collision is most of what's left between Twofold and Jolt in Rain, Hulls, Sweeper and

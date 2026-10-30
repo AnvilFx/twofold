@@ -37,3 +37,4 @@ replaces the old one instead of editing it.
 31. [World inertia is fixed for the step](0031-world-inertia-is-fixed-for-the-step.md)
 32. [Contacts are solved four at a time by color](0032-contacts-are-solved-four-at-a-time-by-color.md)
 33. [SAT tests run four candidates at a time](0033-sat-tests-run-four-candidates-at-a-time.md)
+34. [Fast pairs keep their edge pair within the step](0034-fast-pairs-keep-their-edge-pair-within-the-step.md)

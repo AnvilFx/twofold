@@ -26,6 +26,8 @@ float coneSine(float swing) {
 constexpr float kTreeMargin = 0.1f;
 // Bodies with more shapes than this keep them in a tree of their own.
 constexpr size_t kPartTree = 64;
+// Within a step, a pair that turned less than this against itself, in radians, keeps the feature it met on.
+constexpr float kFeatureTurn = 0.1f;
 
 using Clock = std::chrono::steady_clock;
 
@@ -500,7 +502,7 @@ struct World::Impl {
 
     // One manifold, or one for each way the triangles of a mesh face.
     void collidePair(const Shape& sa, const Shape& sb, float dt, std::vector<Manifold>& out,
-                     TriangleBounds* bounds = nullptr) const {
+                     TriangleBounds* bounds = nullptr, const Feature* reuse = nullptr) const {
         const Body& ba = bodies[sa.body];
         const Body& bb = bodies[sb.body];
         const float travel = relativeTravel(ba, bb, dt);
@@ -525,7 +527,7 @@ struct World::Impl {
             for (Manifold& x : out) { x.normal = -x.normal; }
             return;
         }
-        collide(sa, xa, sb, xb, margin, tol, mo, m);
+        collide(sa, xa, sb, xb, margin, tol, mo, m, reuse);
         if (m.count > 0) { out.push_back(m); }
     }
 
@@ -922,6 +924,7 @@ struct World::Impl {
                 c.bodyA = sa.body;
                 c.bodyB = sb.body;
                 c.touched = touched;
+                c.feature = m.feature;
                 c.normal = m.normal;
                 c.tangent1 = perpendicular(m.normal);
                 c.tangent2 = cross(m.normal, c.tangent1);
@@ -1044,6 +1047,11 @@ struct World::Impl {
         return out;
     }
 
+    bool turnedLittle(const Body& a, const Body& b) const {
+        const Quat now = a.xf.q.conjugate() * b.xf.q, then = a.q0.conjugate() * b.q0;
+        return std::fabs(dot(now, then)) >= std::cos(0.5f * kFeatureTurn);
+    }
+
     // A spinning body carries its contact points away from the overlap, so fast pairs are collided again within the step.
     void refreshContacts(const std::vector<uint32_t>& active, const std::vector<uint32_t>& fast, float remaining) {
         // Both lists are in contact order. Fast contacts are collided again below.
@@ -1082,7 +1090,9 @@ struct World::Impl {
                     bounds.knownCount = (int)(run->end - run->begin);
                     bounds.moved = movedThisStep(a) + movedThisStep(b);
                 }
-                collidePair(shapes[c.shapeA], shapes[c.shapeB], remaining, found, &bounds);
+                // Polyhedra test only the edge pair they last met on, but search every face again.
+                collidePair(shapes[c.shapeA], shapes[c.shapeB], remaining, found, &bounds,
+                            turnedLittle(a, b) ? &c.feature : nullptr);
                 taken.assign(found.size(), 0);
             }
             int pick = -1;
@@ -1098,6 +1108,7 @@ struct World::Impl {
             const Manifold& m = found[(size_t)pick];
             const Contact old = c;
             c.reusable = false;
+            c.feature = m.feature;
             c.normal = m.normal;
             c.tangent1 = perpendicular(m.normal);
             c.tangent2 = cross(m.normal, c.tangent1);
