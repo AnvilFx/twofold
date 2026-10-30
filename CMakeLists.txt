@@ -3,6 +3,7 @@ project(twofold VERSION 0.1.0 LANGUAGES C CXX)
 
 option(TWOFOLD_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(TWOFOLD_BUILD_VIEWER "Build the interactive viewer, which downloads raylib" ${PROJECT_IS_TOP_LEVEL})
+option(TWOFOLD_SIMD "Solve contacts with SSE2 or NEON. Off gives the same results one contact at a time" ON)
 
 add_library(twofold
     src/collide2d.cpp
@@ -10,6 +11,7 @@ add_library(twofold
     src/distance.cpp
     src/hull.cpp
     src/joint.cpp
+    src/lanes.cpp
     src/mesh.cpp
     src/outline.cpp
     src/polyhedron.cpp
@@ -32,6 +34,10 @@ if(MSVC)
     target_compile_options(twofold PRIVATE /W4 /fp:precise)
 else()
     target_compile_options(twofold PRIVATE -Wall -Wextra -ffp-contract=off)
+endif()
+
+if(NOT TWOFOLD_SIMD)
+    target_compile_definitions(twofold PRIVATE TWOFOLD_NO_SIMD)
 endif()
 
 if(TWOFOLD_BUILD_TESTS)

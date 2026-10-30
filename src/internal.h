@@ -7,7 +7,21 @@
 #include "twofold/mesh.h"
 #include "twofold/world.h"
 
+#if !defined(TWOFOLD_NO_SIMD) && (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#define TWOFOLD_SSE2 1
+#elif !defined(TWOFOLD_NO_SIMD) && (defined(__aarch64__) || defined(_M_ARM64))
+#define TWOFOLD_NEON 1
+#endif
+
 namespace twofold {
+
+// Contacts solved side by side.
+#if defined(TWOFOLD_SSE2) || defined(TWOFOLD_NEON)
+constexpr int kLanes = 4;
+#else
+constexpr int kLanes = 1;
+#endif
+constexpr int kColors = 32;
 
 // std::fmax and std::fmin, NaN and signed zeros included, but inline. MSVC makes them library calls.
 // Ordered unequal values take one select. Only equal values and NaN take the branch.
@@ -462,6 +476,8 @@ struct Contact {
     bool removed = false;
     // The pair was touching after the last step, as contact events report it. Every contact of a pair agrees.
     bool touched = false;
+    // Solved in a lane batch this step, which holds its axes in place of SolverData::axes.
+    bool laned = false;
 
     bool touching() const {
         for (int i = 0; i < count; ++i) {
@@ -544,16 +560,73 @@ struct SolverData {
     Body& world;
 };
 
+// One direction at each lane's point.
+struct LaneAxis {
+    float armA[3][kLanes], armB[3][kLanes];
+    float linearA[3][kLanes], angularA[3][kLanes];
+    float linearB[3][kLanes], angularB[3][kLanes];
+    float mass[kLanes];
+};
+
+// Up to kLanes contacts that move no body in common, solved side by side. Masks have every bit set or none.
+struct ContactLanes {
+    // How many lanes hold a contact. The rest repeat the first contact and move nothing.
+    int size = 0;
+    // The most points any contact has, and whether every contact has that many.
+    int points = 0;
+    bool even = true;
+    uint32_t contact[kLanes];
+    uint32_t bodyA[kLanes], bodyB[kLanes];
+    uint32_t moveA[kLanes], moveB[kLanes];
+    uint32_t count[kLanes];
+    uint32_t used[4][kLanes];
+    float biasRate[kLanes], massScale[kLanes], impulseScale[kLanes];
+    float normal[3][kLanes], tangent1[3][kLanes], tangent2[3][kLanes];
+    float friction[kLanes];
+    float anchorA[4][3][kLanes], anchorB[4][3][kLanes];
+    float adjustedSeparation[4][kLanes];
+    LaneAxis normalAxis[4];
+    LaneAxis tangentAxis[4][2];
+};
+
+// Contacts grouped by color: no two contacts of one color move the same body, so a color's contacts can be
+// solved in any order, and kLanes at a time. Colors are solved in order, then the rest one by one. Within a
+// color, contacts with more points come first so that lanes in a batch tend to have as many points.
+struct ContactBatches {
+    std::vector<ContactLanes> lanes;
+    std::vector<uint32_t> rest;
+    std::vector<uint32_t> byColor;
+};
+
+struct ContactColors {
+    // By body index, a bit for each color one of its contacts has.
+    std::vector<uint32_t> bodies;
+    // By contact index. kColors is no color.
+    std::vector<uint8_t> of;
+};
+
 Axis makeAxis(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, const Vec3& d);
 float speedAlong(const Body& a, const Body& b, const Vec3& d, const Axis& x);
 void push(Body& a, Body& b, const Axis& x, float impulse);
 
-void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar);
+void prepareContact(const Body& a, const Body& b, Contact& c, PlanarAxes* planar);
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active);
+// The point axes of a contact that is solved on its own, once it is known not to be laned.
+void makeContactAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes);
 // Re-expresses anchors as the bodies' current lever arms, before their dp and dq are reset.
 void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar);
 void warmStart(SolverData& s, const std::vector<uint32_t>& active);
 void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias);
+// Colors the contacts and marks those that will be laned. A planar or rolling contact gets no color.
+void colorContacts(SolverData& s, const std::vector<uint32_t>& list, ContactColors& colors);
+// Groups the listed contacts by their colors, then fills the lanes as prepareLanes does.
+void batchContacts(SolverData& s, const std::vector<uint32_t>& list, const ContactColors& colors, const SolverContext& ctx,
+                   ContactBatches& out);
+// Takes the contacts' current points into their lanes and works out the axes there.
+void prepareLanes(SolverData& s, const SolverContext& ctx, ContactBatches& batches);
+void warmStartBatches(SolverData& s, const ContactBatches& batches);
+void solveBatches(SolverData& s, const ContactBatches& batches, const SolverContext& ctx, bool useBias);
+void restituteBatches(SolverData& s, const ContactBatches& batches, const SolverContext& ctx);
 void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx);
 
 void warmStartJoints(SolverData& s, const std::vector<uint32_t>& active);

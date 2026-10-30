@@ -3,6 +3,25 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-30 01:47
+
+Contacts are solved four at a time now, with SSE2 or NEON. They are colored first, so no
+two contacts of one color move the same body, and each color is cut into batches of four.
+Each lane runs the same float operations as the single contact solve, so a build with
+`TWOFOLD_SIMD=OFF` gives the same bits. Checked on MSVC with and without AVX2, GCC with
+`-march=native` and Clang with FMA enabled. The NEON path builds for aarch64 macOS but
+hasn't run yet. See [decision 32](decisions/0032-contacts-are-solved-four-at-a-time-by-color.md).
+
+The first version was slower than the old solve everywhere but Pyramid. Two things cost
+the most: copying every contact's axes into its batch after every mid-step refresh, and a
+gather that called its source once per component instead of once per lane. Batches now
+build their own axes, and warm starting and restitution run on them too.
+
+Whole steps with sleep off, ms, before and after: Pyramid 0.480 and 0.329, Hulls 0.585
+and 0.542, Meshes 1.705 and 1.601, Dominoes 0.133 and 0.128. Rain is the same, since its
+time goes to collision. Solving in color order changes results: stacks rest about 0.3 mm
+deeper, and Dominoes has more frames past 5 mm.
+
 ## 2026-10-30 00:02
 
 The repository is public now, and CONTRIBUTING.md says what a pull request needs: a test,
