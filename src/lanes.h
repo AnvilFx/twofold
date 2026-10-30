@@ -41,6 +41,8 @@ inline LaneMask operator&(LaneMask a, LaneMask b) { return { _mm_and_ps(a.m, b.m
 inline LaneMask operator!(LaneMask a) { return { _mm_xor_ps(a.m, _mm_castsi128_ps(_mm_set1_epi32(-1))) }; }
 inline Lanes select(LaneMask m, Lanes a, Lanes b) { return { _mm_or_ps(_mm_and_ps(m.m, a.v), _mm_andnot_ps(m.m, b.v)) }; }
 template <class F> Lanes gather(F f) { return { _mm_setr_ps(f(0), f(1), f(2), f(3)) }; }
+// Bit l set where lane l is.
+inline int bits(LaneMask m) { return _mm_movemask_ps(m.m); }
 
 #elif defined(TWOFOLD_NEON)
 
@@ -73,6 +75,11 @@ template <class F> Lanes gather(F f) {
     r = vsetq_lane_f32(f(2), r, 2);
     return { vsetq_lane_f32(f(3), r, 3) };
 }
+inline int bits(LaneMask m) {
+    const uint32x4_t one = vandq_u32(m.m, vdupq_n_u32(1));
+    return (int)(vgetq_lane_u32(one, 0) | vgetq_lane_u32(one, 1) << 1 | vgetq_lane_u32(one, 2) << 2 |
+                 vgetq_lane_u32(one, 3) << 3);
+}
 
 #else
 
@@ -100,6 +107,7 @@ inline LaneMask operator&(LaneMask a, LaneMask b) { return { a.m && b.m }; }
 inline LaneMask operator!(LaneMask a) { return { !a.m }; }
 inline Lanes select(LaneMask m, Lanes a, Lanes b) { return m.m ? a : b; }
 template <class F> Lanes gather(F f) { return { f(0) }; }
+inline int bits(LaneMask m) { return m.m ? 1 : 0; }
 
 #endif
 
@@ -111,10 +119,19 @@ inline Lanes laneMax(Lanes a, Lanes b) {
     return select(isNan(a), b, r);
 }
 
+// minf in every lane.
+inline Lanes laneMin(Lanes a, Lanes b) {
+    Lanes r = select(b > a, a, b);
+    r = select(a == b, select(a == lanes(0.0f), -(-a + -b), a), r);
+    r = select(isNan(b), a, r);
+    return select(isNan(a), b, r);
+}
+
 struct LaneVec {
     Lanes x, y, z;
 };
 
+inline LaneVec lanes(const Vec3& v) { return { lanes(v.x), lanes(v.y), lanes(v.z) }; }
 inline LaneVec loadVec(const float (*p)[kLanes]) { return { load(p[0]), load(p[1]), load(p[2]) }; }
 // Lane l takes f(l), called once per lane.
 template <class F> LaneVec gatherVec(F f) {

@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "internal.h"
+#include "lanes.h"
 
 namespace twofold {
 
@@ -75,10 +76,57 @@ FramePoly otherFrame(const Polyhedron& p, const Transform& xf, FrameStore& store
 
 int supportFace(const FramePoly& p, const Vec3& n) {
     int best = 0;
+    float most = dot(p.n[0], n);
     for (int i = 1; i < p.faceCount; ++i) {
-        if (dot(p.n[i], n) > dot(p.n[best], n)) { best = i; }
+        const float d = dot(p.n[i], n);
+        if (d > most) {
+            most = d;
+            best = i;
+        }
     }
     return best;
+}
+
+struct PointBlock {
+    float p[3][kLanes];
+};
+
+void put(float (*column)[kLanes], int lane, const Vec3& v) {
+    column[0][lane] = v.x;
+    column[1][lane] = v.y;
+    column[2][lane] = v.z;
+}
+
+// The vertices of f, kLanes to a block. Unused lanes repeat the first vertex.
+void pointBlocks(const FramePoly& f, std::vector<PointBlock>& out) {
+    out.resize((size_t)((f.vertexCount + kLanes - 1) / kLanes));
+    for (int k = 0; k < (int)out.size() * kLanes; ++k) {
+        put(out[(size_t)(k / kLanes)].p, k % kLanes, f.v[k < f.vertexCount ? k : 0]);
+    }
+}
+
+// minf of s and n's dot with every point, scanned in point order. The first dot at or below bound ends the
+// scan and is the result.
+float leastAbove(const std::vector<PointBlock>& points, const Vec3& n, float s, float bound) {
+    const LaneVec along = lanes(n);
+    const Lanes limit = lanes(bound);
+    Lanes low = lanes(s);
+    float out[kLanes];
+    for (const PointBlock& block : points) {
+        const Lanes d = dot(along, loadVec(block.p));
+        const int below = bits(!(d > limit) & !isNan(d));
+        if (below != 0) {
+            store(out, d);
+            int lane = 0;
+            while (!((below >> lane) & 1)) { ++lane; }
+            return out[lane];
+        }
+        low = laneMin(low, d);
+    }
+    store(out, low);
+    float least = out[0];
+    for (int lane = 1; lane < kLanes; ++lane) { least = minf(least, out[lane]); }
+    return least;
 }
 
 struct FaceQuery {
@@ -95,15 +143,21 @@ struct EdgeQuery {
 
 // Starts with the face of a toward b, and tests each face against the vertex of b deepest toward a
 // first, so most faces are ruled out by one vertex. Stops once a face separates by more than limit.
-FaceQuery queryFaces(const FramePoly& a, const FramePoly& b, float limit) {
+FaceQuery queryFaces(const FramePoly& a, const FramePoly& b, float limit, std::vector<PointBlock>& points) {
     const Vec3 toward = b.centroid - a.centroid;
     int deep = 0;
+    float least = dot(b.v[0], toward);
     for (int k = 1; k < b.vertexCount; ++k) {
-        if (dot(b.v[k], toward) < dot(b.v[deep], toward)) { deep = k; }
+        const float d = dot(b.v[k], toward);
+        if (d < least) {
+            least = d;
+            deep = k;
+        }
     }
     const int first = supportFace(a, toward);
 
     FaceQuery q;
+    points.clear();
     for (int j = -1; j < a.faceCount; ++j) {
         if (j == first) { continue; }
         const int i = j < 0 ? first : j;
@@ -111,10 +165,8 @@ FaceQuery queryFaces(const FramePoly& a, const FramePoly& b, float limit) {
         const float bound = q.separation + a.d[i];
         float s = dot(n, b.v[deep]);
         if (s > bound) {
-            for (int k = 0; k < b.vertexCount; ++k) {
-                s = minf(s, dot(n, b.v[k]));
-                if (s <= bound) { break; }
-            }
+            if (points.empty()) { pointBlocks(b, points); }
+            s = leastAbove(points, n, s, bound);
         }
         s -= a.d[i];
         if (s > q.separation) {
@@ -126,23 +178,47 @@ FaceQuery queryFaces(const FramePoly& a, const FramePoly& b, float limit) {
     return q;
 }
 
+// An edge is out when both its ends lie past the same side of the box, so each vertex is marked once with
+// the sides it lies past.
 void edgesInBox(const FramePoly& p, const Vec3& lo, const Vec3& hi, std::vector<int>& out) {
+    thread_local std::vector<uint8_t> past;
+    past.resize((size_t)p.vertexCount);
+    for (int k = 0; k < p.vertexCount; ++k) {
+        const Vec3 v = p.v[k];
+        past[(size_t)k] = (uint8_t)((v.x > hi.x) | (v.x < lo.x) << 1 | (v.y > hi.y) << 2 | (v.y < lo.y) << 3 |
+                                    (v.z > hi.z) << 4 | (v.z < lo.z) << 5);
+    }
     out.clear();
     const std::vector<Polyhedron::Edge>& edges = p.src->edges;
     for (size_t i = 0; i < edges.size(); ++i) {
-        const Vec3 s = p.v[edges[i].v0], t = p.v[edges[i].v1];
-        if ((s.x > hi.x && t.x > hi.x) || (s.x < lo.x && t.x < lo.x)) { continue; }
-        if ((s.y > hi.y && t.y > hi.y) || (s.y < lo.y && t.y < lo.y)) { continue; }
-        if ((s.z > hi.z && t.z > hi.z) || (s.z < lo.z && t.z < lo.z)) { continue; }
+        if (past[(size_t)edges[i].v0] & past[(size_t)edges[i].v1]) { continue; }
         out.push_back((int)i);
+    }
+}
+
+// The face normals either side of kLanes edges, and the edges' arcs.
+struct EdgeBlock {
+    float n0[3][kLanes], n1[3][kLanes], arc[3][kLanes];
+};
+
+// The listed edges of p, kLanes to a block. Unused lanes are zero, which no arc test passes.
+void edgeBlocks(const FramePoly& p, const std::vector<int>& list, std::vector<EdgeBlock>& out) {
+    out.assign((list.size() + kLanes - 1) / kLanes, EdgeBlock{});
+    const std::vector<Polyhedron::Edge>& edges = p.src->edges;
+    for (size_t k = 0; k < list.size(); ++k) {
+        EdgeBlock& block = out[k / kLanes];
+        const int lane = (int)(k % kLanes);
+        put(block.n0, lane, p.n[edges[list[k]].f0]);
+        put(block.n1, lane, p.n[edges[list[k]].f1]);
+        put(block.arc, lane, p.arc[list[k]]);
     }
 }
 
 // An edge pair is a candidate when its arcs cross on the Gauss map of the Minkowski difference.
 // The deciding pair meets within reach of both shapes, so only edges reaching into the overlap of
-// their bounds, grown by reach, are paired.
+// their bounds, grown by reach, are paired. The arc tests run on kLanes edges of b at a time.
 EdgeQuery queryEdges(const FramePoly& a, const FramePoly& b, float reach, std::vector<int>& nearA,
-                     std::vector<int>& nearB) {
+                     std::vector<int>& nearB, std::vector<EdgeBlock>& blocks) {
     EdgeQuery q;
     const Vec3 grow{ reach, reach, reach };
     const Vec3 lo = maxVec(a.lo, b.lo) - grow, hi = minVec(a.hi, b.hi) + grow;
@@ -152,28 +228,33 @@ EdgeQuery queryEdges(const FramePoly& a, const FramePoly& b, float reach, std::v
     const std::vector<Polyhedron::Edge>& ea = a.src->edges;
     const std::vector<Polyhedron::Edge>& eb = b.src->edges;
     q.pruned = nearA.size() < ea.size() || nearB.size() < eb.size();
+    edgeBlocks(b, nearB, blocks);
+    const Lanes zero = lanes(0.0f);
     for (int i : nearA) {
-        const Vec3 ua = a.n[ea[i].f0], va = a.n[ea[i].f1], ga = a.arc[i];
-        for (int j : nearB) {
-            const float cba = dot(b.n[eb[j].f0], ga), dba = dot(b.n[eb[j].f1], ga);
-            if (cba * dba >= 0.0f) { continue; }
-            const Vec3 gb = b.arc[j];
-            const float adc = dot(ua, gb), bdc = dot(va, gb);
-            if (adc * bdc >= 0.0f || cba * bdc >= 0.0f) { continue; }
-
-            const Vec3 pa = a.v[ea[i].v0];
-            const Vec3 pb = b.v[eb[j].v0];
-            Vec3 axis = cross(a.v[ea[i].v1] - pa, b.v[eb[j].v1] - pb);
-            const float len = length(axis);
-            if (len < kParallelEdges * ea[i].length * eb[j].length) { continue; }
-            axis = axis / len;
-            if (dot(axis, pa - a.centroid) < 0.0f) { axis = -axis; }
-            const float s = dot(axis, pb - pa);
-            if (s > q.separation) {
-                q.separation = s;
-                q.a = i;
-                q.b = j;
-                q.axis = axis;
+        const LaneVec ua = lanes(a.n[ea[i].f0]), va = lanes(a.n[ea[i].f1]), ga = lanes(a.arc[i]);
+        for (size_t k = 0; k < blocks.size(); ++k) {
+            const EdgeBlock& block = blocks[k];
+            const Lanes cba = dot(loadVec(block.n0), ga), dba = dot(loadVec(block.n1), ga);
+            const LaneVec gb = loadVec(block.arc);
+            const Lanes bdc = dot(va, gb);
+            int hits = bits((zero > cba * dba) & (zero > dot(ua, gb) * bdc) & (zero > cba * bdc));
+            for (int lane = 0; hits != 0; ++lane, hits >>= 1) {
+                if (!(hits & 1)) { continue; }
+                const int j = nearB[k * kLanes + lane];
+                const Vec3 pa = a.v[ea[i].v0];
+                const Vec3 pb = b.v[eb[j].v0];
+                Vec3 axis = cross(a.v[ea[i].v1] - pa, b.v[eb[j].v1] - pb);
+                const float len = length(axis);
+                if (len < kParallelEdges * ea[i].length * eb[j].length) { continue; }
+                axis = axis / len;
+                if (dot(axis, pa - a.centroid) < 0.0f) { axis = -axis; }
+                const float s = dot(axis, pb - pa);
+                if (s > q.separation) {
+                    q.separation = s;
+                    q.a = i;
+                    q.b = j;
+                    q.axis = axis;
+                }
             }
         }
     }
@@ -324,6 +405,8 @@ void edgeContact(const FramePoly& a, const FramePoly& b, const EdgeQuery& eq, co
 struct ConvexBuffers {
     FrameStore frame;
     std::vector<int> nearA, nearB;
+    std::vector<PointBlock> points;
+    std::vector<EdgeBlock> edges;
     ClipBuffers clip;
 };
 
@@ -333,16 +416,16 @@ void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const 
     const FramePoly a = ownFrame(sa.poly);
     const FramePoly b = otherFrame(sb.poly, { xa.q.unrotate(xb.p - xa.p), xa.q.conjugate() * xb.q }, buf.frame);
 
-    const FaceQuery fa = queryFaces(a, b, margin);
+    const FaceQuery fa = queryFaces(a, b, margin, buf.points);
     if (fa.separation > margin) { return; }
-    const FaceQuery fb = queryFaces(b, a, margin);
+    const FaceQuery fb = queryFaces(b, a, margin, buf.points);
     if (fb.separation > margin) { return; }
     // An edge axis only wins with less overlap than the best face axis.
     const float reach = maxf(margin, -maxf(fa.separation, fb.separation));
-    const EdgeQuery eq = queryEdges(a, b, reach, buf.nearA, buf.nearB);
+    const EdgeQuery eq = queryEdges(a, b, reach, buf.nearA, buf.nearB, buf.edges);
     if (eq.separation > margin) { return; }
     // Pruned edges can hold the only axis separating shapes that are further apart than margin.
-    if (eq.pruned && distance(convexOf(sa), xa, convexOf(sb), xb).distance > margin) { return; }
+    if (eq.pruned && apart(convexOf(sa), xa, convexOf(sb), xb, margin)) { return; }
 
     const float absTol = 0.5f * tol.linearSlop;
     if (eq.a >= 0 && eq.separation > 0.9f * maxf(fa.separation, fb.separation) + absTol) {
@@ -1090,39 +1173,49 @@ struct TriangleFrame {
 
 // Edge queries against a triangle. A triangle edge's arc on the Gauss map is the half circle from the
 // front normal through the edge's outward direction to the back normal.
-EdgeQuery queryTriangleEdges(const FramePoly& a, const FramePoly& b, float reach, std::vector<int>& nearB) {
+EdgeQuery queryTriangleEdges(const FramePoly& a, const FramePoly& b, float reach, std::vector<int>& nearB,
+                             std::vector<EdgeBlock>& blocks) {
     EdgeQuery q;
     const Vec3 grow{ reach, reach, reach };
     edgesInBox(b, maxVec(a.lo, b.lo) - grow, minVec(a.hi, b.hi) + grow, nearB);
     const std::vector<Polyhedron::Edge>& eb = b.src->edges;
     q.pruned = nearB.size() < eb.size();
+    edgeBlocks(b, nearB, blocks);
+    const Lanes zero = lanes(0.0f);
     const Vec3 n = a.n[0];
     for (int k = 0; k < 3; ++k) {
         const Vec3 pa = a.v[k];
         const Vec3 e = a.v[(k + 1) % 3] - pa;
         const Vec3 out = cross(e, n);
         const float lengthA = a.src->edges[k].length;
-        for (int j : nearB) {
-            const Vec3 u = b.n[eb[j].f0], v = b.n[eb[j].f1];
-            const float du = dot(u, e), dv = dot(v, e);
-            if (du * dv >= 0.0f) { continue; }
-            // Where b's arc crosses the plane of a's arc. The pair forms a face when a's normal there is
-            // the opposite direction.
-            const Vec3 p = (u * dv - v * du) * (dv > 0.0f ? 1.0f : -1.0f);
-            if (dot(p, out) >= 0.0f) { continue; }
+        const LaneVec e4 = lanes(e), out4 = lanes(out);
+        for (size_t block = 0; block < blocks.size(); ++block) {
+            const LaneVec u4 = loadVec(blocks[block].n0), v4 = loadVec(blocks[block].n1);
+            const Lanes du4 = dot(u4, e4), dv4 = dot(v4, e4);
+            const Lanes facing = dot(u4 * dv4 - v4 * du4, out4);
+            int hits = bits((zero > du4 * dv4) & (zero > select(dv4 > zero, facing, -facing)));
+            for (int lane = 0; hits != 0; ++lane, hits >>= 1) {
+                if (!(hits & 1)) { continue; }
+                const int j = nearB[block * kLanes + lane];
+                const Vec3 u = b.n[eb[j].f0], v = b.n[eb[j].f1];
+                const float du = dot(u, e), dv = dot(v, e);
+                // Where b's arc crosses the plane of a's arc. The pair forms a face when a's normal there is
+                // the opposite direction.
+                const Vec3 p = (u * dv - v * du) * (dv > 0.0f ? 1.0f : -1.0f);
 
-            const Vec3 pb = b.v[eb[j].v0];
-            Vec3 axis = cross(e, b.v[eb[j].v1] - pb);
-            const float len = length(axis);
-            if (len < kParallelEdges * lengthA * eb[j].length) { continue; }
-            axis = axis / len;
-            if (dot(axis, p) > 0.0f) { axis = -axis; }
-            const float s = dot(axis, pb - pa);
-            if (s > q.separation) {
-                q.separation = s;
-                q.a = k;
-                q.b = j;
-                q.axis = axis;
+                const Vec3 pb = b.v[eb[j].v0];
+                Vec3 axis = cross(e, b.v[eb[j].v1] - pb);
+                const float len = length(axis);
+                if (len < kParallelEdges * lengthA * eb[j].length) { continue; }
+                axis = axis / len;
+                if (dot(axis, p) > 0.0f) { axis = -axis; }
+                const float s = dot(axis, pb - pa);
+                if (s > q.separation) {
+                    q.separation = s;
+                    q.a = k;
+                    q.b = j;
+                    q.axis = axis;
+                }
             }
         }
     }
@@ -1178,6 +1271,8 @@ struct MeshBuffers {
     TriangleFrame tri;
     FrameStore frame;
     std::vector<int> near;
+    std::vector<PointBlock> points;
+    std::vector<EdgeBlock> edges;
     ClipBuffers clip;
     RoundBuffers round;
     std::vector<Manifold> found;
@@ -1372,18 +1467,18 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
             buf.tri.set(c, n);
             const FramePoly a = ownFrame(buf.tri.poly);
 
-            const FaceQuery fa = queryFaces(a, b, margin);
+            const FaceQuery fa = queryFaces(a, b, margin, buf.points);
             if (fa.separation > margin) {
                 ruleOut(bounds, t, fa.separation);
                 return;
             }
-            const FaceQuery fb = queryFaces(b, a, margin);
+            const FaceQuery fb = queryFaces(b, a, margin, buf.points);
             if (fb.separation > margin) {
                 ruleOut(bounds, t, fb.separation);
                 return;
             }
             const float reach = maxf(margin, -maxf(fa.separation, fb.separation));
-            const EdgeQuery eq = queryTriangleEdges(a, b, reach, buf.near);
+            const EdgeQuery eq = queryTriangleEdges(a, b, reach, buf.near, buf.edges);
             if (eq.separation > margin) {
                 ruleOut(bounds, t, eq.separation);
                 return;
@@ -1400,7 +1495,7 @@ void collideMesh(const Shape& mesh, const Transform& xm, const Shape& other, con
                 const Vec3 q = closestOnTriangle(c, b.v[deep], feature);
                 if (lengthSquared(b.v[deep] - q) > margin * margin) {
                     const Convex triangle{ buf.tri.poly.vertices.data(), 3, 0.0f, false };
-                    if (distance(triangle, xm, convexB, xo).distance > margin) { return; }
+                    if (apart(triangle, xm, convexB, xo, margin)) { return; }
                 }
             }
 

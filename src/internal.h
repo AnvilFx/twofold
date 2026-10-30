@@ -223,6 +223,8 @@ struct DistanceResult {
 // A nonzero start is a guess at the normal, which only changes how fast the search converges.
 DistanceResult distance(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb,
                         const Vec3& start = {});
+// Whether distance(a, xa, b, xb).distance > limit, decided as soon as the search can tell.
+bool apart(const Convex& a, const Transform& xa, const Convex& b, const Transform& xb, float limit);
 
 // Center of mass and rotation of a body moving from its pose at t = 0 to its pose at t = 1.
 struct Sweep {

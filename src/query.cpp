@@ -239,7 +239,7 @@ bool shapeContains(const Shape& s, const Transform& xf, const Vec3& point, float
                 if (inside) { return; }
                 Vec3 c[3];
                 m->corners(t, c);
-                inside = distance({ c, 3, 0.0f, false }, Transform{}, single, Transform{}).distance <= tolerance;
+                inside = !apart({ c, 3, 0.0f, false }, Transform{}, single, Transform{}, tolerance);
             });
             return inside;
         }

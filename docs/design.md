@@ -189,12 +189,15 @@ See [decision 30](decisions/0030-bounds-tree-leaves-are-bodies.md).
 - **Polyhedron pairs** use SAT in A's local frame: face normals of A, face normals of B,
   then edge pairs. Each face query starts with the face toward the other shape and tests
   the other shape's deepest vertex first. Only edges reaching into the overlap of the two
-  bounds are paired, and when that skips any edge a GJK distance check confirms the shapes
-  are within the margin. See
+  bounds are paired, and when that skips any edge a GJK check confirms the shapes are within
+  the margin. The check stops as soon as GJK's bounds settle the question. See
   [decision 14](decisions/0014-edge-queries-pair-edges-near-the-overlap.md). Edge pairs are
   pruned with the Gauss map test, so only pairs that form a face of the Minkowski
   difference are tried. Edge pairs closer to parallel than a small sine are skipped. Their
-  axis is unstable and a face axis gives the same answer.
+  axis is unstable and a face axis gives the same answer. The Gauss map tests and the
+  vertex scans of the face queries run four candidates at a time with SSE2 or NEON, and
+  give the same results as one at a time. See
+  [decision 33](decisions/0033-sat-tests-run-four-candidates-at-a-time.md).
 - **Face contacts** clip the incident face against the side planes of the reference face.
   If the faces miss each other along the normal, which happens to small faces in a deep
   overlap, the deepest vertex stands in so the pair never loses its contact.

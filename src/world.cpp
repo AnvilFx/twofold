@@ -1457,7 +1457,7 @@ struct World::Impl {
             if (any) { return; }
             Vec3 c[3];
             m->corners(t, c);
-            any = distance({ c, 3, 0.0f, false }, xm, co, xo).distance <= 0.0f;
+            any = !apart({ c, 3, 0.0f, false }, xm, co, xo, 0.0f);
         });
         return any;
     }
@@ -1466,8 +1466,7 @@ struct World::Impl {
     bool overlapping(const Shape& a, const Shape& b) const {
         if (a.kind == ShapeKind::Mesh) { return b.kind != ShapeKind::Mesh && meshOverlaps(a, b); }
         if (b.kind == ShapeKind::Mesh) { return meshOverlaps(b, a); }
-        return distance(convexOf(a), bodies[a.body].xf * a.local, convexOf(b), bodies[b.body].xf * b.local).distance <=
-               0.0f;
+        return !apart(convexOf(a), bodies[a.body].xf * a.local, convexOf(b), bodies[b.body].xf * b.local, 0.0f);
     }
 
     // Finds what overlaps each sensor at the end of the step, and reports what changed. A pair of shapes
