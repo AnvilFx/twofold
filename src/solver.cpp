@@ -248,22 +248,21 @@ Softness makeSoft(float hertz, float zeta, float h) {
     return { omega / a1, a2 * a3, a3 };
 }
 
-void prepareContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, PlanarAxes* planar) {
+void prepareContact(const Body& a, const Body& b, Contact& c, PlanarAxes* planar) {
     c.planar = planarContact(a, b, c.normal, c.plane);
     if (c.planar) {
         c.normal = normalize(c.normal - c.plane * dot(c.normal, c.plane));
         c.tangent1 = cross(c.plane, c.normal);
         c.tangent2 = c.plane;
         makePlanarAxes(a, b, c, planar);
-    } else {
-        makeAxes(a, b, c, axes);
     }
     const PlanarState st(a, b, c.plane);
     for (int i = 0; i < c.count; ++i) {
         ContactPoint& p = c.points[i];
         p.adjustedSeparation = p.separation - dot(p.anchorB - p.anchorA, c.normal);
         p.relativeVelocity = c.planar ? st.speed(c.normal, planar[i].normalA, planar[i].normalB)
-                                      : speedAlong(a, b, c.normal, axes[i].normal);
+                                      : dot(c.normal, b.v - a.v) + dot(cross(p.anchorB, c.normal), b.w) -
+                                            dot(cross(p.anchorA, c.normal), a.w);
         p.maxNormalImpulse = 0.0f;
     }
     if (c.rollingResistance > 0.0f && c.count > 0) {
@@ -288,7 +287,7 @@ void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, Pl
     }
     if (c.planar) {
         makePlanarAxes(a, b, c, planar);
-    } else {
+    } else if (!c.laned) {
         makeAxes(a, b, c, axes);
     }
 }
@@ -296,13 +295,18 @@ void rebaseContact(const Body& a, const Body& b, Contact& c, PointAxes* axes, Pl
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
         Contact& c = s.contacts[ci];
-        prepareContact(s.bodies[c.bodyA], s.bodies[c.bodyB], c, &s.axes[4 * ci], &s.planarAxes[4 * ci]);
+        prepareContact(s.bodies[c.bodyA], s.bodies[c.bodyB], c, &s.planarAxes[4 * ci]);
     }
+}
+
+void makeContactAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {
+    if (!c.planar && !c.laned) { makeAxes(a, b, c, axes); }
 }
 
 void warmStart(SolverData& s, const std::vector<uint32_t>& active) {
     for (uint32_t ci : active) {
         const Contact& c = s.contacts[ci];
+        if (c.laned) { continue; }
         const PointAxes* axes = &s.axes[4 * ci];
         Body& a = s.bodies[c.bodyA];
         Body& b = s.bodies[c.bodyB];
@@ -406,7 +410,7 @@ void solveContacts(SolverData& s, const std::vector<uint32_t>& active, const Sol
 void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx) {
     for (uint32_t ci : active) {
         Contact& c = s.contacts[ci];
-        if (c.restitution == 0.0f) { continue; }
+        if (c.restitution == 0.0f || c.laned) { continue; }
         const PointAxes* axes = &s.axes[4 * ci];
         Body& a = s.bodies[c.bodyA];
         Body& b = s.bodies[c.bodyB];

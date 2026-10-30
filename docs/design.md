@@ -26,6 +26,7 @@ records in [decisions](decisions/) explain why some of these choices were made.
 | `src/world.cpp` | Bodies, shapes, the step, broadphase, sleeping, continuous collision, events, sensors |
 | `src/tree.h`, `src/tree.cpp` | The dynamic AABB tree behind the broadphase and queries |
 | `src/solver.cpp` | Contact preparation, warm starting, the contact solve, restitution |
+| `src/lanes.h`, `src/lanes.cpp` | Contact coloring, and the contact solve four contacts at a time |
 | `src/joint.cpp` | Joint warm starting, the joint solve and the settle pass |
 | `src/collide3d.cpp` | SAT for polyhedra, sphere, half-space and mesh pairs, manifold reduction |
 | `src/collide2d.cpp` | The planar path: profiles, polygon and circle pairs |
@@ -144,7 +145,7 @@ every input point.
      before every substep (see below)
    - integrate velocities
    - warm start joints, then contacts
-   - solve joints with bias, then contacts, then again for impact contacts
+   - solve joints with bias, then contacts by color, then again for impact contacts
    - integrate positions
    - relax: solve joints and contacts again without bias, then again for impact contacts
 5. **Restitution.** One pass over points that were approaching faster than the threshold.
@@ -354,6 +355,19 @@ Friction is a two-axis cone, clamped by the point's normal impulse times the mix
 friction. The biased pass solves friction points in order, the relax pass in reverse. With
 one fixed order small stacks rock forever and never sleep. See
 [decision 13](decisions/0013-relax-pass-takes-friction-in-reverse.md).
+
+Contacts are colored so that no two contacts of one color move the same body, then solved
+color by color, four at a time with SSE2 or NEON. Each contact takes the lowest of 32
+colors that neither of its moving bodies already has. Static, kinematic and sleeping bodies
+take no colors, so one floor can touch every contact of a color. Within a color, contacts
+with more points come first, so the four in a batch tend to have the same number of points.
+Planar contacts, contacts with rolling resistance, and contacts left without a color are
+solved one at a time after the colors. The second pass for impact contacts uses the same
+colors. A batch keeps its contacts' anchors, directions and axes side by side and builds
+the axes itself, and warm starting and restitution run on the same batches. Each lane runs
+the same float operations in the same order as the single contact solve, so
+`TWOFOLD_SIMD=OFF`, which solves the same batches one lane at a time, gives the same
+results. See [decision 32](decisions/0032-contacts-are-solved-four-at-a-time-by-color.md).
 
 A body in a pair that closes faster than the restitution threshold has all its contacts
 solved twice in each pass. One pass doesn't carry an impact through a stack within a
@@ -635,7 +649,9 @@ are visited by index. The tests run the same scene twice and compare every pose 
 bit, and check that a copied world steps like the original. The viewer's verify command
 replays a whole session from a fresh scene and compares every frame.
 
-Strict float flags keep the compiler from fusing or reordering float math. Results still
+Strict float flags keep the compiler from fusing or reordering float math. The contact
+lanes use no fused multiply-add and no approximate reciprocal or square root, so results
+don't depend on the SIMD width either. Results still
 depend on the platform's `sin`, `cos` and `atan2`, which turns, joints and outlines use, so
 two platforms can differ.
 

@@ -158,6 +158,8 @@ struct World::Impl {
     std::vector<uint32_t> activeContacts, fastContacts, fastSolidContacts;
     std::vector<PointAxes> axes;
     std::vector<PlanarAxes> planarAxes;
+    ContactColors contactColors;
+    ContactBatches activeBatches, impactBatches;
     // Mesh triangles a fast pair ruled out at the start of the step, so collisions within the step can skip
     // them. Each pair's run is sorted by triangle, and the runs are in key order.
     struct BoundRun {
@@ -1109,7 +1111,8 @@ struct World::Impl {
                 p.anchorA = m.points[i].position - up - a.com;
                 p.anchorB = m.points[i].position + up - b.com;
             }
-            prepareContact(a, b, c, &axes[4 * ci], &planarAxes[4 * ci]);
+            prepareContact(a, b, c, &planarAxes[4 * ci]);
+            makeContactAxes(a, b, c, &axes[4 * ci]);
             // Restitution needs the speed the pair approached at, from the nearest point the step started with.
             for (int i = 0; i < c.count; ++i) {
                 ContactPoint& p = c.points[i];
@@ -1623,20 +1626,33 @@ struct World::Impl {
         SolverData data{ bodies, contacts, axes, planarAxes, joints, worldBody };
         prepareContacts(data, active);
         const std::vector<uint32_t> impact = impactContacts(active, ctx.restitutionThreshold);
+        colorContacts(data, active, contactColors);
+        for (uint32_t ci : active) {
+            const Contact& c = contacts[ci];
+            makeContactAxes(bodies[c.bodyA], bodies[c.bodyB], c, &axes[4 * ci]);
+        }
+        batchContacts(data, active, contactColors, ctx, activeBatches);
+        batchContacts(data, impact, contactColors, ctx, impactBatches);
         for (int i = 0; i < n; ++i) {
             const std::vector<uint32_t>& again = i == n / 2 ? fast : fastSolid;
-            if (i > 0 && !again.empty()) { refreshContacts(active, again, (float)(n - i) * h); }
+            if (i > 0 && !again.empty()) {
+                refreshContacts(active, again, (float)(n - i) * h);
+                prepareLanes(data, ctx, activeBatches);
+                prepareLanes(data, ctx, impactBatches);
+            }
             integrateVelocities(h);
             warmStartJoints(data, activeJoints);
+            warmStartBatches(data, activeBatches);
             warmStart(data, active);
             solveJoints(data, activeJoints, ctx, true);
-            solveContacts(data, active, ctx, true);
-            if (!impact.empty()) { solveContacts(data, impact, ctx, true); }
+            solveBatches(data, activeBatches, ctx, true);
+            if (!impact.empty()) { solveBatches(data, impactBatches, ctx, true); }
             integratePositions(h);
             solveJoints(data, activeJoints, ctx, false);
-            solveContacts(data, active, ctx, false);
-            if (!impact.empty()) { solveContacts(data, impact, ctx, false); }
+            solveBatches(data, activeBatches, ctx, false);
+            if (!impact.empty()) { solveBatches(data, impactBatches, ctx, false); }
         }
+        restituteBatches(data, activeBatches, ctx);
         applyRestitution(data, active, ctx);
         if (!activeJoints.empty()) {
             breakJoints(activeJoints, dt);
