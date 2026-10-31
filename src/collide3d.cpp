@@ -438,11 +438,197 @@ EdgeQuery reusedEdges(const FramePoly& a, const FramePoly& b, const Feature& f) 
     return q;
 }
 
+int edgeBetween(const Polyhedron& p, int f0, int f1) {
+    for (size_t i = 0; i < p.edges.size(); ++i) {
+        const Polyhedron::Edge& e = p.edges[i];
+        if ((e.f0 == f0 && e.f1 == f1) || (e.f0 == f1 && e.f1 == f0)) { return (int)i; }
+    }
+    return -1;
+}
+
+// The faces of a box by axis and side, 1 for the positive side, and its edges by the axis they run along and
+// their sides on the next two axes. makeBox numbers every box alike.
+struct BoxTopology {
+    int face[3][2];
+    int edge[3][2][2];
+};
+
+const BoxTopology& boxTopology() {
+    static const BoxTopology topology = [] {
+        const Polyhedron p = makeBox({ 1.0f, 1.0f, 1.0f });
+        BoxTopology b{};
+        for (int f = 0; f < (int)p.normals.size(); ++f) {
+            const float n[3] = { p.normals[f].x, p.normals[f].y, p.normals[f].z };
+            for (int k = 0; k < 3; ++k) {
+                if (std::fabs(n[k]) > 0.5f) { b.face[k][n[k] > 0.0f] = f; }
+            }
+        }
+        for (int i = 0; i < 3; ++i) {
+            for (int s1 = 0; s1 < 2; ++s1) {
+                for (int s2 = 0; s2 < 2; ++s2) {
+                    b.edge[i][s1][s2] = edgeBetween(p, b.face[(i + 1) % 3][s1], b.face[(i + 2) % 3][s2]);
+                }
+            }
+        }
+        return b;
+    }();
+    return topology;
+}
+
+// The face and edge queries of two boxes in closed form, b given in the frame of a: the three axes of each box
+// and the nine pairs of them. An edge pair counts only where its arcs cross, as in queryEdges. False once an
+// axis separates the boxes by more than margin. Unsure when they can still be further apart than margin.
+bool boxQueries(const Vec3& halfA, const Vec3& halfB, const Transform& x, float margin, FaceQuery& fa,
+                FaceQuery& fb, EdgeQuery& eq, bool& unsure) {
+    const Mat3 rot = x.q.toMat3();
+    const float r[3][3] = { { rot.r[0].x, rot.r[0].y, rot.r[0].z },
+                            { rot.r[1].x, rot.r[1].y, rot.r[1].z },
+                            { rot.r[2].x, rot.r[2].y, rot.r[2].z } };
+    float ar[3][3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) { ar[i][j] = std::fabs(r[i][j]); }
+    }
+    const float t[3] = { x.p.x, x.p.y, x.p.z };
+    const float ha[3] = { halfA.x, halfA.y, halfA.z }, hb[3] = { halfB.x, halfB.y, halfB.z };
+
+    int faceA = 0, faceB = 0;
+    for (int i = 0; i < 3; ++i) {
+        const float s = std::fabs(t[i]) - ha[i] - (hb[0] * ar[i][0] + hb[1] * ar[i][1] + hb[2] * ar[i][2]);
+        if (s > margin) { return false; }
+        if (s > fa.separation) {
+            fa.separation = s;
+            faceA = i;
+        }
+    }
+    float tb[3];
+    for (int j = 0; j < 3; ++j) {
+        tb[j] = t[0] * r[0][j] + t[1] * r[1][j] + t[2] * r[2][j];
+        const float s = std::fabs(tb[j]) - hb[j] - (ha[0] * ar[0][j] + ha[1] * ar[1][j] + ha[2] * ar[2][j]);
+        if (s > margin) { return false; }
+        if (s > fb.separation) {
+            fb.separation = s;
+            faceB = j;
+        }
+    }
+
+    // Axis i of a crossed with axis j of b has components -r[i2][j] and r[i1][j] on the other two axes of a.
+    int edgeI = -1, edgeJ = -1;
+    float edgeSign = 1.0f, edgeLength = 1.0f;
+    for (int i = 0; i < 3; ++i) {
+        const int i1 = (i + 1) % 3, i2 = (i + 2) % 3;
+        for (int j = 0; j < 3; ++j) {
+            const int j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+            const float l1 = -r[i2][j], l2 = r[i1][j];
+            if (l1 == 0.0f || l2 == 0.0f || r[i][j1] == 0.0f || r[i][j2] == 0.0f) { continue; }
+            const float len = std::sqrt(l1 * l1 + l2 * l2);
+            if (len < kParallelEdges) { continue; }
+            const float d = t[i1] * l1 + t[i2] * l2;
+            const float ra = ha[i1] * ar[i2][j] + ha[i2] * ar[i1][j];
+            const float rb = hb[j1] * ar[i][j2] + hb[j2] * ar[i][j1];
+            const float s = (std::fabs(d) - ra - rb) / len;
+            if (s > margin) { return false; }
+            if (s > eq.separation) {
+                eq.separation = s;
+                edgeI = i;
+                edgeJ = j;
+                edgeSign = d < 0.0f ? -1.0f : 1.0f;
+                edgeLength = len;
+            }
+        }
+    }
+
+    const BoxTopology& topology = boxTopology();
+    fa.index = topology.face[faceA][t[faceA] >= 0.0f];
+    fb.index = topology.face[faceB][tb[faceB] < 0.0f];
+    if (edgeI >= 0) {
+        const int i = edgeI, j = edgeJ;
+        const int i1 = (i + 1) % 3, i2 = (i + 2) % 3, j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+        const float l1 = -r[i2][j] * edgeSign, l2 = r[i1][j] * edgeSign;
+        float n[3];
+        n[i] = 0.0f;
+        n[i1] = l1 / edgeLength;
+        n[i2] = l2 / edgeLength;
+        eq.axis = { n[0], n[1], n[2] };
+        // The edge of b meets a on the far side of b along the axis, whose components in b are these.
+        const float m1 = r[i][j2] * edgeSign, m2 = -r[i][j1] * edgeSign;
+        eq.a = topology.edge[i][l1 > 0.0f][l2 > 0.0f];
+        eq.b = topology.edge[j][m1 < 0.0f][m2 < 0.0f];
+    }
+
+    // A gap is the distance between the boxes when the closest points of the features meeting across it lie on
+    // both. Otherwise they can be further apart than margin.
+    unsure = false;
+    const float gap = maxf(maxf(fa.separation, fb.separation), eq.separation);
+    if (gap <= 0.0f) { return true; }
+    if (edgeI >= 0 && gap == eq.separation) {
+        const int i = edgeI, j = edgeJ;
+        const int i1 = (i + 1) % 3, i2 = (i + 2) % 3, j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+        const float sideB1 = r[i][j2] * edgeSign < 0.0f ? hb[j1] : -hb[j1];
+        const float sideB2 = -r[i][j1] * edgeSign < 0.0f ? hb[j2] : -hb[j2];
+        float w[3];
+        for (int k = 0; k < 3; ++k) { w[k] = -t[k] - sideB1 * r[k][j1] - sideB2 * r[k][j2]; }
+        w[i1] += -r[i2][j] * edgeSign > 0.0f ? ha[i1] : -ha[i1];
+        w[i2] += r[i1][j] * edgeSign > 0.0f ? ha[i2] : -ha[i2];
+        // Closest points of the two edge lines, as distances from the middle of each edge.
+        const float b = r[i][j], f = w[0] * r[0][j] + w[1] * r[1][j] + w[2] * r[2][j];
+        const float s = (b * f - w[i]) / (1.0f - b * b);
+        unsure = std::fabs(s) > ha[i] || std::fabs(f + s * b) > hb[j];
+    } else if (gap == fa.separation) {
+        const int i = faceA;
+        const float side = t[i] < 0.0f ? -1.0f : 1.0f;
+        for (int k = 0; k < 3 && !unsure; ++k) {
+            if (k == i) { continue; }
+            float v = t[k];
+            for (int j = 0; j < 3; ++j) { v += side * r[i][j] > 0.0f ? -hb[j] * r[k][j] : hb[j] * r[k][j]; }
+            unsure = std::fabs(v) > ha[k];
+        }
+    } else {
+        const int j = faceB;
+        const float side = tb[j] < 0.0f ? -1.0f : 1.0f;
+        for (int k = 0; k < 3 && !unsure; ++k) {
+            if (k == j) { continue; }
+            float v = -tb[k];
+            for (int i = 0; i < 3; ++i) { v += side * r[i][j] > 0.0f ? ha[i] * r[i][k] : -ha[i] * r[i][k]; }
+            unsure = std::fabs(v) > hb[k];
+        }
+    }
+    return true;
+}
+
+// Picks the deciding axis among the queries and clips the contact along it.
+void convexContact(const FramePoly& a, const FramePoly& b, const FaceQuery& fa, const FaceQuery& fb,
+                   const EdgeQuery& eq, const Transform& xa, float margin, const Tolerances& tol,
+                   const Motion& motion, ClipBuffers& clip, Manifold& m) {
+    const float absTol = 0.5f * tol.linearSlop;
+    if (eq.a >= 0 && eq.separation > 0.9f * maxf(fa.separation, fb.separation) + absTol) {
+        edgeContact(a, b, eq, xa, margin, tol.linearSlop, motion, clip, m);
+        m.feature = { Feature::Edges, eq.a, eq.b };
+    } else if (fb.separation > 0.98f * fa.separation + absTol) {
+        faceContact(b, fb.index, a, true, xa, margin, tol.linearSlop, motion.swapped(), clip, m);
+        m.feature = { Feature::FaceB, -1, fb.index };
+    } else {
+        faceContact(a, fa.index, b, false, xa, margin, tol.linearSlop, motion, clip, m);
+        m.feature = { Feature::FaceA, fa.index, -1 };
+    }
+}
+
 void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const Transform& xb,
                    float margin, const Tolerances& tol, const Motion& motion, Manifold& m, const Feature* reuse) {
     thread_local ConvexBuffers buf;
+    const Transform x{ xa.q.unrotate(xb.p - xa.p), xa.q.conjugate() * xb.q };
     const FramePoly a = ownFrame(sa.poly);
-    const FramePoly b = otherFrame(sb.poly, { xa.q.unrotate(xb.p - xa.p), xa.q.conjugate() * xb.q }, buf.frame);
+    const Box* boxA = std::get_if<Box>(&sa.geometry);
+    const Box* boxB = std::get_if<Box>(&sb.geometry);
+    if (boxA && boxB) {
+        FaceQuery fa, fb;
+        EdgeQuery eq;
+        bool unsure;
+        if (!boxQueries(boxA->halfExtents, boxB->halfExtents, x, margin, fa, fb, eq, unsure)) { return; }
+        if (unsure && apart(convexOf(sa), xa, convexOf(sb), xb, margin)) { return; }
+        convexContact(a, otherFrame(sb.poly, x, buf.frame), fa, fb, eq, xa, margin, tol, motion, buf.clip, m);
+        return;
+    }
+    const FramePoly b = otherFrame(sb.poly, x, buf.frame);
 
     const FaceQuery fa = queryFaces(a, b, margin, buf.points);
     if (fa.separation > margin) { return; }
@@ -458,18 +644,7 @@ void collideConvex(const Shape& sa, const Transform& xa, const Shape& sb, const 
         // Pruned edges can hold the only axis separating shapes that are further apart than margin.
         if (eq.pruned && apart(convexOf(sa), xa, convexOf(sb), xb, margin)) { return; }
     }
-
-    const float absTol = 0.5f * tol.linearSlop;
-    if (eq.a >= 0 && eq.separation > 0.9f * maxf(fa.separation, fb.separation) + absTol) {
-        edgeContact(a, b, eq, xa, margin, tol.linearSlop, motion, buf.clip, m);
-        m.feature = { Feature::Edges, eq.a, eq.b };
-    } else if (fb.separation > 0.98f * fa.separation + absTol) {
-        faceContact(b, fb.index, a, true, xa, margin, tol.linearSlop, motion.swapped(), buf.clip, m);
-        m.feature = { Feature::FaceB, -1, fb.index };
-    } else {
-        faceContact(a, fa.index, b, false, xa, margin, tol.linearSlop, motion, buf.clip, m);
-        m.feature = { Feature::FaceA, fa.index, -1 };
-    }
+    convexContact(a, b, fa, fb, eq, xa, margin, tol, motion, buf.clip, m);
 }
 
 // Normal points from the polyhedron to the sphere.

@@ -3,6 +3,27 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-10-31 01:25
+
+Two boxes now get a SAT of their own. A box has three face axes and three edge directions,
+so all 15 axes and the separation along each come straight from the half extents and the
+rotation between them, with no vertex scans and no edge list. Face and edge numbers come
+from a table built once from makeBox, and the contact is clipped as for any polyhedron.
+For boxes with a gap, the closest points of the features meeting across it show whether
+the gap is the real distance. When it is, GJK is skipped, which happens for three of four
+gapped pairs in Sweeper and nearly all in Rain.
+
+Box pairs in Sweeper cost 260 ms over 12 seeds of 600 frames, down from 410. Whole steps
+with sleep off, ms, before and after: Dominoes 0.109 and 0.102, Sweeper 0.285 and 0.276,
+with other runs putting Sweeper 6% to 11% faster. With sleep on, Dominoes 0.088 and 0.080,
+Sweeper 0.256 and 0.239. Rain gained in box time but its whole step is within noise.
+
+Where boxes overlap, the contacts match the general query's to within 1 mrad and 0.1 mm.
+With a gap they can differ: the closed form sees every edge pair, and the general query had
+pruned some. Over 12 sets of 32 seeds the overlap counts move within noise. Clipping is now
+most of what a touching box pair costs, and that code is shared by every polyhedron. See
+[decision 35](decisions/0035-box-pairs-test-their-axes-in-closed-form.md).
+
 ## 2026-10-30 12:54
 
 Fast pairs are collided again before every substep, and that was a quarter to a third of
