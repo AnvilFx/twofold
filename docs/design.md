@@ -198,6 +198,14 @@ See [decision 30](decisions/0030-bounds-tree-leaves-are-bodies.md).
   vertex scans of the face queries run four candidates at a time with SSE2 or NEON, and
   give the same results as one at a time. See
   [decision 33](decisions/0033-sat-tests-run-four-candidates-at-a-time.md).
+- **Box pairs** take the same 15 axes in closed form: three per box from the half extents
+  and the rotation between them, and nine edge pairs, each counted only where its arcs
+  cross, as in the general query. All 15 are tested every time, so the edge pair of the
+  last collision isn't kept. When the boxes are apart, the gap is checked against the
+  features meeting across it. If the closest points of those features lie on both boxes,
+  the gap is the distance and GJK is skipped. The face and edge numbers come from makeBox,
+  so the contacts are clipped as for any polyhedron. See
+  [decision 35](decisions/0035-box-pairs-test-their-axes-in-closed-form.md).
 - **Face contacts** clip the incident face against the side planes of the reference face.
   If the faces miss each other along the normal, which happens to small faces in a deep
   overlap, the deepest vertex stands in so the pair never loses its contact.

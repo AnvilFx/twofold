@@ -371,6 +371,7 @@ struct Motion {
 };
 
 // With reuse, two polyhedra test the edge pair it names, while its arcs still cross, in place of every edge pair.
+// Two boxes test every axis in closed form and need no reuse.
 void collide(const Shape& a, const Transform& xa, const Shape& b, const Transform& xb,
              float margin, const Tolerances& tol, const Motion& motion, Manifold& m, const Feature* reuse = nullptr);
 
