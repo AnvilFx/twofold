@@ -27,6 +27,19 @@ void push(Body& a, Body& b, const Axis& x, float impulse) {
     b.w += x.angularB * impulse;
 }
 
+void limitSpeed(Body& b, float maxSpeed, float maxSpin) {
+    if (b.type != MotionType::Dynamic || !b.awake) { return; }
+    const float speed = length(b.v), spin = length(b.w);
+    if (speed > maxSpeed) {
+        b.v = b.v * (maxSpeed / speed);
+        b.kept = minf(b.kept, maxSpeed / speed);
+    }
+    if (spin > maxSpin) {
+        b.w = b.w * (maxSpin / spin);
+        b.kept = minf(b.kept, maxSpin / spin);
+    }
+}
+
 namespace {
 
 void makeAxes(const Body& a, const Body& b, const Contact& c, PointAxes* axes) {

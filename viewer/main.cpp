@@ -458,6 +458,8 @@ struct App {
         changed |= ImGui::SliderFloat("Contact hertz", &s.contactHertz, 5.0f, 120.0f, "%.0f");
         changed |= ImGui::SliderFloat("Damping ratio", &s.contactDampingRatio, 0.0f, 20.0f, "%.1f");
         changed |= ImGui::SliderFloat("Max pushout", &s.maxPushoutSpeed, 0.1f, 20.0f, "%.1f");
+        changed |= ImGui::SliderFloat("Max speed", &s.maxLinearSpeed, 10.0f, 10000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+        changed |= ImGui::SliderFloat("Max spin", &s.maxAngularSpeed, 10.0f, 10000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
         changed |= ImGui::SliderFloat("Bounce threshold", &s.restitutionThreshold, 0.0f, 5.0f, "%.2f");
         changed |= ImGui::SliderFloat("Hit threshold", &s.hitThreshold, 0.0f, 5.0f, "%.2f");
         changed |= ImGui::SliderFloat("Sleep threshold", &s.sleepThreshold, 0.0f, 0.5f, "%.3f");

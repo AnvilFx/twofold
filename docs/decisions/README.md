@@ -34,8 +34,9 @@ replaces the old one instead of editing it.
 28. [Hulls are built about their own center](0028-hulls-are-built-about-their-own-center.md)
 29. [Planar pairs are solved in 2D](0029-planar-pairs-are-solved-in-2d.md)
 30. [Bounds tree leaves are bodies](0030-bounds-tree-leaves-are-bodies.md)
-31. [World inertia is fixed for the step](0031-world-inertia-is-fixed-for-the-step.md)
+31. [World inertia is fixed for the step](0031-world-inertia-is-fixed-for-the-step.md), amended by 36
 32. [Contacts are solved four at a time by color](0032-contacts-are-solved-four-at-a-time-by-color.md)
 33. [SAT tests run four candidates at a time](0033-sat-tests-run-four-candidates-at-a-time.md)
 34. [Fast pairs keep their edge pair within the step](0034-fast-pairs-keep-their-edge-pair-within-the-step.md)
 35. [Box pairs test their axes in closed form](0035-box-pairs-test-their-axes-in-closed-form.md)
+36. [Speeds are limited and joints keep up](0036-speeds-are-limited-and-joints-keep-up.md)

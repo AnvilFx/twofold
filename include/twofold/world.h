@@ -221,6 +221,10 @@ struct WorldSettings {
     float contactHertz = 30.0f;
     float contactDampingRatio = 10.0f;
     float maxPushoutSpeed = 3.0f;
+    // Dynamic bodies never move faster than maxLinearSpeed or turn faster than maxAngularSpeed, in radians per
+    // second, which keeps extreme impulses from overflowing.
+    float maxLinearSpeed = 1000.0f;
+    float maxAngularSpeed = 1000.0f;
     float restitutionThreshold = 1.0f;
     // Touching pairs that approached faster than this are reported as hits.
     float hitThreshold = 1.0f;

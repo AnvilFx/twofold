@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <chrono>
+#include <cmath>
 #include <iterator>
 
 #include "internal.h"
@@ -1138,16 +1139,27 @@ struct World::Impl {
     }
 
     void integrateVelocities(float h) {
+        const float maxSpeed = settings.maxLinearSpeed * settings.lengthUnit;
         for (Body& b : bodies) {
             if (!b.alive || b.type != MotionType::Dynamic || !b.awake) { continue; }
             b.v = b.v + (settings.gravity * b.gravityScale + b.force * b.invMass) * h;
             b.v = b.linearProj * (b.v * (1.0f / (1.0f + h * b.linearDamping)));
             b.w = b.w + b.invInertiaWorld * b.torque * h;
             b.w = b.angularProj * (b.w * (1.0f / (1.0f + h * b.angularDamping)));
+            limitSpeed(b, maxSpeed, settings.maxAngularSpeed);
+        }
+    }
+
+    void limitSpeeds() {
+        const float maxSpeed = settings.maxLinearSpeed * settings.lengthUnit;
+        const float maxSpin = settings.maxAngularSpeed;
+        for (Body& b : bodies) {
+            if (b.alive) { limitSpeed(b, maxSpeed, maxSpin); }
         }
     }
 
     void integratePositions(float h) {
+        limitSpeeds();
         for (Body& b : bodies) {
             if (!b.alive || b.type == MotionType::Static) { continue; }
             if (b.type == MotionType::Dynamic && !b.awake) { continue; }
@@ -1550,7 +1562,7 @@ struct World::Impl {
     }
 
     void step(float dt) {
-        if (dt <= 0.0f) { return; }
+        if (!(dt > 0.0f) || !std::isfinite(dt)) { return; }
         const Clock::time_point start = Clock::now();
         const int n = std::max(1, settings.substeps);
         const float h = dt / (float)n;
@@ -1584,7 +1596,7 @@ struct World::Impl {
             b.expectedTravel = (length(b.v) + length(b.w) * bodyExtent(b)) * dt;
             b.dp = Vec3{};
             b.dq = Quat{};
-            // The world inertia stays fixed through the substeps to match the effective masses built from it.
+            // The world inertia changes only where the effective masses built from it are rebuilt.
             updateInverseMass(b);
         }
 
@@ -1646,11 +1658,16 @@ struct World::Impl {
         for (int i = 0; i < n; ++i) {
             const std::vector<uint32_t>& again = i == n / 2 ? fast : fastSolid;
             if (i > 0 && !again.empty()) {
+                // A long body turning fast would otherwise take impulses through the inertia of its old pose.
+                for (Body& b : bodies) {
+                    if (b.alive && b.type == MotionType::Dynamic && b.awake) { updateInverseMass(b); }
+                }
                 refreshContacts(active, again, (float)(n - i) * h);
                 prepareLanes(data, ctx, activeBatches);
                 prepareLanes(data, ctx, impactBatches);
             }
             integrateVelocities(h);
+            scaleToKeptSpeed(data, activeJoints);
             warmStartJoints(data, activeJoints);
             warmStartBatches(data, activeBatches);
             warmStart(data, active);
@@ -1664,6 +1681,7 @@ struct World::Impl {
         }
         restituteBatches(data, activeBatches, ctx);
         applyRestitution(data, active, ctx);
+        limitSpeeds();
         if (!activeJoints.empty()) {
             breakJoints(activeJoints, dt);
             settleJoints(data, activeJoints, kSettleIterations);

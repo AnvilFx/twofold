@@ -303,6 +303,8 @@ struct Body {
 
     Mat3 invMassWorld = Mat3::zero();
     Mat3 invInertiaWorld = Mat3::zero();
+    // The smallest fraction of its speed the body kept under the speed limits since its joints last warm started.
+    float kept = 1.0f;
     // For a body locked to a plane, its inverse mass and its inverse inertia about the plane normal. Zero while
     // it can't move.
     float planeInvMass = 0.0f;
@@ -621,6 +623,8 @@ struct ContactColors {
 Axis makeAxis(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, const Vec3& d);
 float speedAlong(const Body& a, const Body& b, const Vec3& d, const Axis& x);
 void push(Body& a, Body& b, const Axis& x, float impulse);
+// Scales down the velocities of an awake dynamic body that moves or turns faster than allowed.
+void limitSpeed(Body& b, float maxSpeed, float maxSpin);
 
 void prepareContact(const Body& a, const Body& b, Contact& c, PlanarAxes* planar);
 void prepareContacts(SolverData& s, const std::vector<uint32_t>& active);
@@ -642,6 +646,7 @@ void solveBatches(SolverData& s, const ContactBatches& batches, const SolverCont
 void restituteBatches(SolverData& s, const ContactBatches& batches, const SolverContext& ctx);
 void applyRestitution(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx);
 
+void scaleToKeptSpeed(SolverData& s, const std::vector<uint32_t>& active);
 void warmStartJoints(SolverData& s, const std::vector<uint32_t>& active);
 // The relax pass adds each joint's impulses on body B to its force and torque.
 void solveJoints(SolverData& s, const std::vector<uint32_t>& active, const SolverContext& ctx, bool useBias);

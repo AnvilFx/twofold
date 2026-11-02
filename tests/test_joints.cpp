@@ -371,6 +371,57 @@ TEST(planar_chain_stays_in_its_plane) {
     CHECK(worstGap < 0.01f);
 }
 
+TEST(planar_body_settles_under_a_distance_joint_it_cannot_satisfy) {
+    // Each anchor is 1 m off the body's plane and the joints are shorter than that.
+    World w;
+    for (int i = 0; i < 3; ++i) {
+        const float z = 3.0f * (float)i;
+        const BodyId b = addBody(w, { 0.1f, -0.1f, z }, Box{ { 0.25f, 0.25f, 0.25f } }, MotionType::Dynamic, LockPlanar);
+        DistanceJoint dj{ { 0, 0, z + 1.0f }, { i == 2 ? 0.3f : 0.1f, -0.1f, z } };
+        dj.length = 0.5f;
+        if (i == 1) {
+            dj.limited = true;
+            dj.minDistance = 0.0f;
+            dj.maxDistance = 0.5f;
+        }
+        join(w, BodyId{}, b, dj);
+    }
+    float fastest = 0.0f;
+    for (int i = 0; i < 300; ++i) {
+        w.step(kDt);
+        for (BodyId b : w.bodies()) { fastest = std::fmax(fastest, length(w.linearVelocity(b))); }
+    }
+    CHECK(fastest < 5.0f);
+    for (const JointInfo& info : w.joints()) {
+        CHECK(std::hypot(info.anchorB.x, info.anchorB.y) < 0.05f);
+    }
+}
+
+TEST(light_jointed_body_struck_past_the_speed_limits_settles) {
+    for (int hinge = 0; hinge < 2; ++hinge) {
+        World w;
+        const BodyId heavy = addBody(w, { 0, 4, 0 }, Box{});
+        w.setMassProperties(heavy, { 100.0f, {}, Mat3{} * (100.0f / 6.0f) });
+        const BodyId light = addBody(w, { 0, 2.9f, 0 }, Box{ { 0.05f, 0.05f, 0.05f } });
+        w.setMassProperties(light, { 1e-5f, {}, Mat3{} * (1e-5f * 0.01f / 6.0f) });
+        join(w, BodyId{}, heavy, PointJoint{ { 0, 5, 0 } });
+        if (hinge) {
+            join(w, heavy, light, HingeJoint{ { 0, 3.5f, 0 }, { 0, 0, 1 } });
+        } else {
+            join(w, heavy, light, PointJoint{ { 0, 3.5f, 0 } });
+        }
+        float fastest = 0.0f;
+        for (int i = 0; i < 600; ++i) {
+            if (i < 30) { w.addImpulseAtPoint(light, { 50, 30, -40 }, w.position(light) + Vec3{ 0.05f, 0.05f, 0 }); }
+            w.step(kDt);
+            fastest = std::fmax(fastest, length(w.linearVelocity(light)));
+        }
+        CHECK(fastest <= 1000.0f);
+        CHECK(length(w.linearVelocity(light)) < 10.0f);
+        for (const JointInfo& info : w.joints()) { CHECK(length(info.anchorB - info.anchorA) < 0.01f); }
+    }
+}
+
 TEST(kinematic_body_carries_what_hangs_from_it) {
     World w;
     const BodyId crane = addBody(w, { 0, 5, 0 }, Box{ { 0.2f, 0.2f, 0.2f } }, MotionType::Kinematic);

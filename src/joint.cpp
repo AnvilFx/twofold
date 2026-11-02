@@ -129,6 +129,14 @@ Axis lockedSlide(const Body& a, const Body& b, const Vec3& ra, const Vec3& rb, c
     return x;
 }
 
+// How much of a distance error to correct. Where locks leave the bodies little motion along the joint, a full
+// correction would throw them past the closest distance they can reach, so it shrinks with the motion left.
+float reachable(const Body& a, const Body& b, const Axis& x) {
+    const float invMass = a.invMass + b.invMass;
+    if ((!a.locks && !b.locks) || x.mass <= 0.0f || invMass <= 0.0f) { return 1.0f; }
+    return minf(1.0f, 1.0f / (x.mass * invMass));
+}
+
 void pushPoint(Body& a, Body& b, const Vec3& ra, const Vec3& rb, const Vec3& impulse) {
     a.v -= a.invMassWorld * impulse;
     a.w -= a.invInertiaWorld * cross(ra, impulse);
@@ -377,18 +385,21 @@ void solveJoint(Body& a, Body& b, Joint& j, const SolverContext& ctx, bool useBi
             if (len <= 0.0f) { break; }
             const Vec3 u = d / len;
             const Axis x = makeAxis(a, b, ra, rb, u);
+            const float reach = reachable(a, b, x);
             j.rowForce[0] = u;
             if (j.limited ? j.lower >= j.upper : j.hertz == 0.0f) {
-                solveEqual(a, b, x, u, len - (j.limited ? j.lower : j.length), j.axialImpulse, soft);
+                solveEqual(a, b, x, u, (len - (j.limited ? j.lower : j.length)) * reach, j.axialImpulse, soft);
                 break;
             }
             if (j.hertz > 0.0f) {
                 const Softness spring = makeSoft(j.hertz, j.dampingRatio, ctx.h);
-                solveEqual(a, b, x, u, len - j.length, j.axialImpulse, spring);
+                solveEqual(a, b, x, u, (len - j.length) * reach, j.axialImpulse, spring);
             }
             if (j.limited) {
-                solveLimit(a, b, x, u, len - j.lower, j.lowerImpulse, ctx, useBias);
-                solveLimit(a, b, flipped(x), -u, j.upper - len, j.upperImpulse, ctx, useBias);
+                // Only a violated limit is scaled. The slack before it stays exact.
+                const float lower = len - j.lower, upper = j.upper - len;
+                solveLimit(a, b, x, u, maxf(lower, lower * reach), j.lowerImpulse, ctx, useBias);
+                solveLimit(a, b, flipped(x), -u, maxf(upper, upper * reach), j.upperImpulse, ctx, useBias);
             }
             break;
         }
@@ -495,13 +506,15 @@ void settleJoint(Body& a, Body& b, const Joint& j) {
         case JointType::Distance: {
             const float len = length(d);
             if (len <= 0.0f) { break; }
-            const Axis x = makeAxis(a, b, ra, rb, d / len);
+            const Vec3 u = d / len;
+            const Axis x = makeAxis(a, b, ra, rb, u);
+            const float reach = reachable(a, b, x);
             if (j.limited ? j.lower >= j.upper : j.hertz == 0.0f) {
-                moveAlong(a, b, x, len - (j.limited ? j.lower : j.length));
+                moveAlong(a, b, x, (len - (j.limited ? j.lower : j.length)) * reach);
             } else if (j.limited && len < j.lower) {
-                moveAlong(a, b, x, len - j.lower);
+                moveAlong(a, b, x, (len - j.lower) * reach);
             } else if (j.limited && len > j.upper) {
-                moveAlong(a, b, x, len - j.upper);
+                moveAlong(a, b, x, (len - j.upper) * reach);
             }
             break;
         }
@@ -534,6 +547,30 @@ void settleJoints(SolverData& s, const std::vector<uint32_t>& active, int iterat
             const Joint& j = s.joints[ji];
             settleJoint(bodyOf(s, j.bodyA), bodyOf(s, j.bodyB), j);
         }
+    }
+}
+
+// Impulses that drove a body past the speed limits would drive it there again from every warm start, and grow
+// without bound, so they shrink with the speed the body kept.
+void scaleToKeptSpeed(SolverData& s, const std::vector<uint32_t>& active) {
+    for (uint32_t ji : active) {
+        Joint& j = s.joints[ji];
+        const float f = minf(bodyOf(s, j.bodyA).kept, bodyOf(s, j.bodyB).kept);
+        if (f >= 1.0f) { continue; }
+        j.linearImpulse = j.linearImpulse * f;
+        j.angularImpulse = j.angularImpulse * f;
+        j.frictionTurn = j.frictionTurn * f;
+        j.axialImpulse *= f;
+        j.motorImpulse *= f;
+        j.lowerImpulse *= f;
+        j.upperImpulse *= f;
+        j.frictionImpulse *= f;
+        j.swingImpulse *= f;
+    }
+    for (uint32_t ji : active) {
+        const Joint& j = s.joints[ji];
+        bodyOf(s, j.bodyA).kept = 1.0f;
+        bodyOf(s, j.bodyB).kept = 1.0f;
     }
 }
 

@@ -550,6 +550,20 @@ TEST(identical_runs_match_exactly) {
     CHECK(simulate() == simulate());
 }
 
+TEST(step_ignores_a_time_that_is_not_finite) {
+    World w;
+    addGround(w);
+    const BodyId b = addBox(w, { 0, 2, 0 }, { 0.5f, 0.5f, 0.5f });
+    run(w, 0.25f);
+    const Vec3 p = w.position(b);
+    w.step(NAN);
+    w.step(INFINITY);
+    w.step(-INFINITY);
+    CHECK(w.position(b).x == p.x && w.position(b).y == p.y && w.position(b).z == p.z);
+    run(w, 2.0f);
+    CHECK_NEAR(w.position(b).y, 0.5f, 0.01f);
+}
+
 TEST(destroyed_ids_become_invalid) {
     World w;
     const BodyId a = addBox(w, { 0, 0, 0 }, { 0.5f, 0.5f, 0.5f });

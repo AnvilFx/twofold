@@ -143,14 +143,15 @@ every input point.
 4. **Substeps.** `substeps` times (4 by default):
    - halfway through, fast pairs are collided again, and fast pairs without a planar body
      before every substep (see below)
-   - integrate velocities
+   - integrate velocities, within the speed limits
+   - scale down the joint impulses of bodies the speed limits slowed
    - warm start joints, then contacts
    - solve joints with bias, then contacts by color, then again for impact contacts
-   - integrate positions
+   - limit speeds again, then integrate positions
    - relax: solve joints and contacts again without bias, then again for impact contacts
-5. **Restitution.** One pass over points that were approaching faster than the threshold.
-   Then the settle pass moves jointed bodies to close what joint error is left, and pairs
-   that started or stopped touching are reported.
+5. **Restitution.** One pass over points that were approaching faster than the threshold,
+   then the speed limits once more. Then the settle pass moves jointed bodies to close what
+   joint error is left, and pairs that started or stopped touching are reported.
 6. **Clean up.** Forces and torques clear, and kinematic bodies snap to their targets.
 7. **Continuous collision.** Bodies that moved well past what their speculative contacts
    covered are swept and moved back. Then sensors find what overlaps them.
@@ -359,8 +360,19 @@ sees separation change between substeps without collision running again.
 
 Each point direction's lever arms, velocity change per unit impulse and effective mass are
 built once per step, from each body's world inverse inertia at the start of the step. That
-inertia stays fixed through the substeps, so the responses and the effective masses agree.
-See [decision 31](decisions/0031-world-inertia-is-fixed-for-the-step.md).
+inertia changes only at a mid-step refresh, which builds the contacts again from it, so the
+responses and the effective masses agree. See
+[decision 31](decisions/0031-world-inertia-is-fixed-for-the-step.md) and
+[decision 36](decisions/0036-speeds-are-limited-and-joints-keep-up.md).
+
+No dynamic body moves faster than `maxLinearSpeed` or turns faster than `maxAngularSpeed`,
+1000 m/s and 1000 rad/s by default. Velocities over a limit are scaled down after gravity
+and forces, again before positions move, and after restitution. Without the limits an
+impulse that a nearly massless body takes against a heavy one can grow from substep to
+substep until it overflows. A body keeps the smallest fraction of its speed it kept under
+the limits, and before the next warm start every joint on it scales its stored impulses
+by that fraction. Otherwise the impulses that drove it past the limit would drive it there
+again from each warm start and grow without bound.
 
 Friction is a two-axis cone, clamped by the point's normal impulse times the mixed
 friction. The biased pass solves friction points in order, the relax pass in reverse. With
@@ -420,7 +432,9 @@ anything. Pairs listed as fast at the start of the step are collided again halfw
 the substeps. Fast pairs without a planar body are collided again before every substep
 after the first, with the margin covering only the motion left in the step.
 
-Before that, every active contact that isn't collided again is rebased. Its anchors become
+Before that, every awake dynamic body refreshes its world inverse inertia, so a long body
+turning fast takes impulses through the inertia of its current pose. Then every active
+contact that isn't collided again is rebased. Its anchors become
 the bodies' current lever arms, its stored separation absorbs the distance already moved,
 and `dp`, `dq` and the base orientation of every body reset. New points then take impulses
 from old points the same way as after the narrowphase, and the restitution data of the
@@ -475,6 +489,13 @@ angles. Twist limits act along the relative spin that changes only the twist, an
 swing limit along the spin that changes the room left in the ellipse. Both are anchored
 like the hinge's limits. See
 [decision 27](decisions/0027-swing-twist-rows-follow-the-exact-rates.md).
+
+Axis locks can leave a distance joint's bodies little motion along the line between the
+anchors, as when a planar body is held to a point outside its plane. A full correction
+would throw them past the closest distance they can reach, so the joint scales its error
+by the share of the bodies' unlocked response along that line that the locks leave. A
+limit that is not violated keeps its slack exact. The settle pass scales its moves the
+same way. See [decision 36](decisions/0036-speeds-are-limited-and-joints-keep-up.md).
 
 `jointInfo` gives the force a joint applied to body B in its last active step, and the
 torque about anchor B. It is the impulse each row ends a substep's relax pass with, summed
@@ -654,7 +675,8 @@ See [decision 26](decisions/0026-events-follow-the-solve-and-sensors-test-overla
 
 Every tolerance is in meters and scales with `WorldSettings::lengthUnit`. Linear slop is
 5 mm. The speculative distance is four times that, 20 mm. Pushout speed, the restitution
-threshold and the sleep threshold scale the same way. A scene in centimeters sets
+threshold, the sleep threshold and `maxLinearSpeed` scale the same way. `maxAngularSpeed`
+does not. A scene in centimeters sets
 `lengthUnit` to 100 and behaves exactly like the same scene in meters.
 
 ## Determinism
@@ -695,11 +717,25 @@ See [decision 6](decisions/0006-traced-outlines-become-convex-pieces.md).
   geometry finds nothing.
 - A cast that only grazes a shape, closing on it at almost no speed, can report a miss.
 - Meshes can't be dynamic. Use hulls or several convex shapes for a moving concave body.
-- A light chain holding a much heavier body stretches. Twelve links holding a ball about
-  200 times heavier than each link rest 0.17 m longer in total.
-- Contacts are springs, so a stack sags under its own weight. A three box tower rests
-  with 7 mm of overlap between the bottom two boxes. More substeps or a higher
-  `contactHertz` make it stiffer.
+- Contacts are springs, so a stack sags under its own weight, and the sag grows faster
+  than the height. With the defaults, a tower of 1 m boxes sinks 25 mm in total at 10
+  boxes, 0.11 m at 20, 0.24 m at 30, 0.44 m at 40 and 0.78 m at 50. A perfectly aligned
+  tower of 50 stands. With 2 cm of jitter between boxes, 40 stand and 50 fall. More
+  substeps alone change nothing, since the stiffness comes from `contactHertz`. They
+  allow a higher one: 8 substeps at 60 Hz sink 6 mm at 10 boxes, 61 mm at 30 and 0.17 m
+  at 50, and the jittered 50 stand.
+- A heavy body on a light one sinks into it in proportion to the mass ratio. A 1 m box on
+  a 0.2 m thick plate on the ground overlaps the plate by 0.5 cm at 25 times the plate's
+  mass, 1.8 cm at 100 times and 7 cm at 400 times. At 1000 times it pushes the plate
+  through the ground. 8 substeps at 60 Hz cut the overlap to a quarter, and hold the plate
+  at 1000 times with 4.3 cm of overlap.
+- A light chain holding a much heavier body stretches. Twelve 0.5 m links holding a ball
+  50 times as heavy as each link rest 8 cm longer in total. At 200 times they stretch 0.13 m
+  in the first second and keep creeping, 0.29 m after ten. At 1000 times the chain fails,
+  with or without more substeps. Sixty links stretch meters at 200 times. Give the links
+  more mass, or join the heavy body with fewer, stronger joints.
+- No body moves faster than `maxLinearSpeed` or turns faster than `maxAngularSpeed`, which
+  bend momentum and energy for anything that would. Raise them for scenes that need more.
 - Fast spinners that end up deep inside each other under a pile can stay 150 to 220 mm
   deep for 8 to 12 frames before they recover. This also happens without the mid-step
   refresh. Pushing deep pairs out harder fixes it but keeps some hull piles from ever

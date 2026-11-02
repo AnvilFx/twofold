@@ -3,6 +3,43 @@
 Notes as I go, newest first. The longer reasoning behind some of this is in
 [decisions](decisions/).
 
+## 2026-11-02 15:41
+
+A bug report found three ways to break a world. `step` with a NaN or infinite time now
+does nothing. A distance joint holding a planar body to a point outside its plane threw
+the body past the closest distance it could reach, up to 700 m/s and 2000 rad/s. It now
+scales its error by how much motion along the joint the locks leave, and the trapped
+bodies settle at about 1 m/s. The third was a fuzzer that reached NaN in 226 of 300 seeds
+with locks and joints on, and in 19 of 300 with both off.
+
+Most of those came from a nearly massless body on a joint. A 1e-5 kg body hung by a hinge
+from a 100 kg one, struck for half a second, went to infinity. Bodies now keep under
+`maxLinearSpeed` and `maxAngularSpeed`, 1000 m/s and 1000 rad/s. The limits alone made
+joint fuzzing worse, 256 seeds against 193 in the tamer mode, because a slowed body keeps
+the joint impulses that sped it up and the next warm start applies them again. Each body
+now records the smallest fraction of its speed it kept, and its joints scale their stored
+impulses by it before they warm start. Clearing the impulses instead, or only on mass and
+lock changes, did nothing.
+
+At a mid-step refresh, every awake body also refreshes its world inertia before the
+contacts are rebuilt. A long body spinning fast took impulses through the inertia of its
+pose at the start of the step and gained up to 77% of its energy. It now gains at most 8%.
+
+NaN seeds out of 300, before and after: locks and joints 226 and 5, the tamer mode 193 and
+0, locks only 214 and 2, neither 19 and 0.
+
+Whole steps, ms, best of three, before and after: Rain 1.70 and 1.82, Sweeper 0.74 and
+0.79, Dominoes 0.22 and 0.25, Joints 0.65 and 0.69. Hulls, Cutouts and Meshes came out
+faster, so these runs vary by 5% to 10%. Without the inertia refresh Rain and Sweeper
+match before. Refreshing only the bodies of pairs collided again was no faster in these
+runs and kept a cylinder in the mesh bowl test awake.
+
+The report also said the docs understate the limits, so Known limits now has measured
+numbers for tall stacks, heavy bodies on light ones, and chains holding heavy bodies. A
+50 box tower sinks 0.78 m with the defaults, and more substeps alone don't change that:
+the stiffness comes from `contactHertz`, which more substeps allow raising. See
+[decision 36](decisions/0036-speeds-are-limited-and-joints-keep-up.md).
+
 ## 2026-10-31 01:25
 
 Two boxes now get a SAT of their own. A box has three face axes and three edge directions,

@@ -2,7 +2,7 @@
 
 Date: 2026-10-29
 
-Status: Accepted.
+Status: Accepted. Amended by [decision 36](0036-speeds-are-limited-and-joints-keep-up.md).
 
 ## Context
 
